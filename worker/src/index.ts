@@ -27,6 +27,7 @@ const HELP = [
   "  24 12   （場コードでも可）",
   "",
   "「今日」と送ると本日の開催場一覧を返します。",
+  "「whoami」と送ると自分のuserIdを表示します。",
 ].join("\n");
 
 export default {
@@ -90,6 +91,27 @@ async function handleEvent(event: LineEvent, env: Env) {
   }
 
   const text = (event.message.text ?? "").trim();
+  const userId = event.source?.userId;
+
+  // userId は「メッセージを受け取って初めて分かる」値なので、
+  // wrangler tail で拾えるようにログに出しておく。
+  console.log(`message from ${userId ?? "unknown"}: ${text}`);
+
+  // ALLOWED_USER_ID に設定する値を確認するためのコマンド
+  if (/^(whoami|id|ユーザーid|ユーザーID)$/i.test(text)) {
+    await reply(
+      replyToken,
+      [
+        textMessage(
+          userId
+            ? `あなたのuserIdは\n\n${userId}\n\nこれを worker/.dev.vars の ALLOWED_USER_ID に設定して npm run secrets を実行すると、自分以外からのメッセージを無視するようになります。`
+            : "userIdを取得できませんでした（グループやルームからの送信の可能性があります）",
+        ),
+      ],
+      env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
+    return;
+  }
 
   if (!text || /^(help|ヘルプ|使い方|？|\?)$/i.test(text)) {
     await reply(replyToken, [textMessage(HELP)], env.LINE_CHANNEL_ACCESS_TOKEN);

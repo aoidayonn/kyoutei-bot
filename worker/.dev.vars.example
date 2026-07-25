@@ -18,5 +18,10 @@ LINE_CHANNEL_SECRET=your_channel_secret_here
 LINE_CHANNEL_ACCESS_TOKEN=your_channel_access_token_here
 
 # 自分のLINE userId（任意）。設定すると自分以外からのメッセージを無視します。
-# userId は Webhook のログで確認できます。
+#
+# 【最初は空のままで構いません】
+# userId は「ボットにメッセージを送って初めて分かる」値なので、
+# デプロイ前には取得できません。デプロイ後に手順が2つあります:
+#   1. LINEでボットに「whoami」と送る → Uで始まる33文字が返ってくる
+#   2. その値をここに書いて npm run secrets を実行し直す
 ALLOWED_USER_ID=
