@@ -122,6 +122,38 @@ jobs:
           print(f"結果確定レース: {n:,} 件 ({lo} 〜 {hi})")
           assert n > 0, "レースが1件も入っていません"
 
+          # 期間の両端だけ見ても途中の穴には気づけない。
+          # 実際「2025-06-31」という存在しない日付で1回目が失敗し、
+          # 1年分が抜けたまま2週間気づかなかった。
+          # 通常は1か月あたり4,000〜5,200件なので、極端に少ない月を洗い出す。
+          months = dict(con.execute(
+              "select substr(date,1,7), count(*) from races"
+              " where trifecta is not null group by 1 order by 1"
+          ).fetchall())
+          if months:
+              keys = sorted(months)
+              # 最初と最後の月は期間の切れ目で少なくなるので判定から外す
+              gaps = [k for k in keys[1:-1] if months[k] < 3000]
+
+              # 連続しているはずの月そのものが存在しないケースも拾う
+              import datetime as _dt
+              cur = _dt.date(int(keys[0][:4]), int(keys[0][5:]), 1)
+              last = _dt.date(int(keys[-1][:4]), int(keys[-1][5:]), 1)
+              missing = []
+              while cur <= last:
+                  k = cur.strftime("%Y-%m")
+                  if k not in months:
+                      missing.append(k)
+                  cur = (cur.replace(day=28) + _dt.timedelta(days=4)).replace(day=1)
+
+              print(f"収録月数: {len(keys)} ({keys[0]} 〜 {keys[-1]})")
+              if missing:
+                  print(f"::warning::欠落している月: {', '.join(missing)}")
+              if gaps:
+                  print(f"::warning::件数が極端に少ない月: {', '.join(f'{k}({months[k]}件)' for k in gaps)}")
+              if missing or gaps:
+                  print("::warning::その期間を start/end に指定して再実行すると埋まります")
+
           # 手動実行(バックフィル)以外で件数が極端に少ない場合は、
           # キャッシュが失効してDBが作り直されている。
           # このまま週次学習が走ると壊れたモデルができるので止める。
