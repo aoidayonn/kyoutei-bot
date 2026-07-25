@@ -125,13 +125,19 @@ jobs:
         env:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          PROBLEMS: ${{ steps.probe.outputs.problems }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           pip install requests -q
-          python notify_line.py "⚠️ ボットの死活監視で異常を検知しました
+          python - <<'EOF'
+          import os
+          from notify_line import notify
 
-          ${{ steps.probe.outputs.problems }}
-
-          boatrace.jp のページ構造が変わった可能性があります。
-          MAINTENANCE.md の「スクレイパーが動かなくなった」を参照してください。
-
-          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          notify(
+              "⚠️ ボットの死活監視で異常を検知しました\n\n"
+              + os.environ.get("PROBLEMS", "詳細不明")
+              + "\n\nboatrace.jp のページ構造が変わった可能性があります。\n"
+              "MAINTENANCE.md の「スクレイパーが動かなくなった」を参照してください。\n\n"
+              + os.environ.get("RUN_URL", "")
+          )
+          EOF
