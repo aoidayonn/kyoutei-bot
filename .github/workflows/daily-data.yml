@@ -54,6 +54,26 @@ jobs:
           key: kyotei-db-
           restore-keys: kyotei-db-
 
+      # DBはキャッシュにしか無く、7日間アクセスがないと消える。
+      # 消えたことに気づかず走ると「前日1日分だけのDB」が出来上がり、
+      # 週次学習が壊れたモデルを作ってしまう。ここで必ず気づけるようにする。
+      - name: データベースの有無を確認
+        id: check
+        run: |
+          if [ -f data/kyotei.db ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            python - <<'EOF'
+          import sqlite3
+          con = sqlite3.connect("data/kyotei.db")
+          n, = con.execute("select count(*) from races").fetchone()
+          lo, hi = con.execute("select min(date), max(date) from races").fetchone()
+          print(f"復元: {n:,} レース ({lo} 〜 {hi})")
+          EOF
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::データベースが見つかりません（キャッシュ失効の可能性）"
+          fi
+
       - name: 期間を決める
         id: range
         run: |
@@ -86,13 +106,29 @@ jobs:
       - name: 取り込み結果の確認
         run: |
           python - <<'EOF'
+          import os
           import sqlite3
           con = sqlite3.connect("data/kyotei.db")
           n, = con.execute("select count(*) from races where trifecta is not null").fetchone()
           lo, hi = con.execute("select min(date), max(date) from races").fetchone()
           print(f"結果確定レース: {n:,} 件 ({lo} 〜 {hi})")
           assert n > 0, "レースが1件も入っていません"
+
+          # 手動実行(バックフィル)以外で件数が極端に少ない場合は、
+          # キャッシュが失効してDBが作り直されている。
+          # このまま週次学習が走ると壊れたモデルができるので止める。
+          manual = os.environ.get("MANUAL") == "true"
+          if not manual and n < 5000:
+              raise SystemExit(
+                  f"レース数が {n:,} 件しかありません。キャッシュが失効した可能性があります。\n"
+                  "Actions から手動でバックフィルし直してください:\n"
+                  "  start=2023-07-01 end=2024-06-30\n"
+                  "  start=2024-07-01 end=2025-06-30\n"
+                  "  start=2025-07-01 end=(今日)"
+              )
           EOF
+        env:
+          MANUAL: ${{ github.event_name == 'workflow_dispatch' }}
 
       # 週次学習ワークフローも同じキャッシュを読む
       - name: データベースを保存
@@ -100,3 +136,13 @@ jobs:
         with:
           path: data/kyotei.db
           key: kyotei-db-${{ github.run_id }}
+
+      # キャッシュは7日で消えるが、アーティファクトは90日残る。
+      # キャッシュが飛んだときはここからダウンロードして復旧できる。
+      - name: バックアップを保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyotei-db-backup
+          path: data/kyotei.db
+          retention-days: 90
+          overwrite: true
