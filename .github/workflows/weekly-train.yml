@@ -90,6 +90,17 @@ jobs:
           echo "train_end=$END" >> $GITHUB_OUTPUT
           echo "test_start=$(date -u -d "$END +1 day" +%F)" >> $GITHUB_OUTPUT
 
+      # model.json に記録されている指標は、そのモデルを学習したときの検証期間で
+      # 測ったもの。週次で再学習すると検証期間が毎回ずれるため、
+      # そのまま比べるとモデルの差ではなく期間の差を見てしまう。
+      # 同じ土俵に乗せるため、現行モデルを新しい検証期間で測り直す。
+      - name: 現行モデルを新しい検証期間で測り直す
+        working-directory: pipeline
+        run: |
+          python evaluate_model.py --model /tmp/model-current.json \
+                                   --start ${{ steps.split.outputs.test_start }} \
+                                   --out /tmp/current-metrics.json
+
       - name: 学習
         working-directory: pipeline
         run: |
@@ -106,7 +117,7 @@ jobs:
         id: compare
         working-directory: pipeline
         run: |
-          if python compare_models.py /tmp/model-current.json ../worker/src/model.json | tee ../compare.log; then
+          if python compare_models.py /tmp/current-metrics.json ../worker/src/model.json | tee ../compare.log; then
             echo "adopt=true" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.force }}" = "true" ]; then
             echo "強制採用が指定されています"
