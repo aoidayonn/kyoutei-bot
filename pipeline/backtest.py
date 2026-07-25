@@ -25,37 +25,27 @@ from pathlib import Path
 import numpy as np
 
 import features as F
+import model_io
 from plackett_luce import trifecta_probabilities
 from train import load_races
 
 DB = Path(__file__).resolve().parent.parent / "data" / "kyotei.db"
 
 
-def predict_race(race, weights, priors, exponents):
-    rows = np.array(F.build_features(race, priors))
-    v = rows @ weights
-    return trifecta_probabilities(v.tolist(), exponents)
+def predict_race(race, model: "model_io.Model"):
+    rows = F.build_features(race, model.priors)
+    v = model.utilities(rows)
+    return trifecta_probabilities(v, model.stage_exponents)
 
 
 def run(model_path, start, end, n_points, db=DB):
-    model = json.loads(Path(model_path).read_text(encoding="utf-8"))
-
-    names = model.get("feature_names")
-    if names != F.FEATURE_NAMES:
-        raise SystemExit(
-            "model.json の feature_names が features.py と一致しません。再学習してください"
-        )
+    model = model_io.load_model(model_path)  # feature_names の照合込み
 
     # 学習期間と検証期間が重なっているとインサンプル評価になり数字が甘く出る
-    tp = model.get("train_period")
+    tp = model.data.get("train_period")
     if tp and start and str(start) <= str(tp[1]):
         print(f"⚠️  検証開始日 {start} が学習期間（〜{tp[1]}）と重なっています。"
               f"この数字は楽観的に偏ります。\n")
-
-    w = np.array(model["weights"])
-    priors = {"lane_prior": model["lane_prior"],
-              "racer_lane": model.get("racer_lane", {})}
-    exponents = tuple(model.get("stage_exponents", [1.0, 1.0, 1.0]))
 
     con = sqlite3.connect(db)
     races = load_races(con, start, end)
@@ -75,7 +65,7 @@ def run(model_path, start, end, n_points, db=DB):
     combo_counter = Counter()
 
     for r in races:
-        probs = predict_race(r, w, priors, exponents)
+        probs = predict_race(r, model)
         if not probs:
             continue
         ranked = sorted(probs.items(), key=lambda kv: -kv[1])

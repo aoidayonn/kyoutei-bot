@@ -254,21 +254,10 @@ def neg_loglik(w, X, order, l2):
     return -ll / N + l2 * float(w @ w), -grad / N + 2 * l2 * w
 
 
-def fit_stage_exponents(w, X, order, verbose=True):
-    """2着・3着の「効きの強さ」を別パラメータで推定する。
-
-    素の Plackett-Luce は「1着を除いた残りの中でも強さの比が同じ」と仮定するが、
-    現実のボートレースはそうならない。1着が決まった後の2・3着争いは
-    もっと横並びに近い。この仮定のズレを放置すると穴目の確率が過大評価され、
-    「期待値が高い買い目」が万券ばかりになってしまう。
-
-    そこで各段階に指数 α, β を入れる:
-        P(j が2着) ∝ exp(α · v_j)
-        P(k が3着) ∝ exp(β · v_k)
-    α, β < 1 なら「2着以降は差がつきにくい」ことを意味する。
-    """
-    V = X @ w
-    N = X.shape[0]
+def fit_stage_exponents_from_V(V, order, verbose=True):
+    """効用行列 V (N,6) から2着・3着の段階指数を推定する（GBM等でも使えるよう分離）。"""
+    V = np.asarray(V)
+    N = V.shape[0]
     idx = np.arange(N)
 
     def stage_ll(power, stage):
@@ -289,7 +278,6 @@ def fit_stage_exponents(w, X, order, verbose=True):
             ll = stage_ll(p, stage)
             if ll > best_ll:
                 best, best_ll = float(p), ll
-        # 粗いグリッドの周りを細かく探す
         for p in np.arange(best - 0.05, best + 0.051, 0.01):
             ll = stage_ll(float(p), stage)
             if ll > best_ll:
@@ -299,6 +287,11 @@ def fit_stage_exponents(w, X, order, verbose=True):
     if verbose:
         print(f"  段階指数: 1着=1.0  2着={exponents[1]}  3着={exponents[2]}")
     return exponents
+
+
+def fit_stage_exponents(w, X, order, verbose=True):
+    """線形モデル用の従来API。V = X @ w を計算して委譲する。"""
+    return fit_stage_exponents_from_V(X @ w, order, verbose)
 
 
 def fit(X, order, l2=1.0, verbose=True):

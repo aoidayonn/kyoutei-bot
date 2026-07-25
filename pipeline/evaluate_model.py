@@ -8,7 +8,7 @@ model.json に記録されている指標は「そのモデルを学習したと
 モデルの良し悪しではなく**期間の違い**を比べてしまう。
 
 そこで採用判定の前に、現行モデルを新しい検証期間で測り直して、
-同じ土俵で比較できるようにする。
+同じ土俵で比較できるようにする。線形・LightGBM の両形式に対応。
 
     python evaluate_model.py --model ../worker/src/model.json \
                              --start 2026-04-26 --out /tmp/current-metrics.json
@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 import train as T
+import model_io
 
 DB = Path(__file__).resolve().parent.parent / "data" / "kyotei.db"
 
@@ -42,21 +43,7 @@ def main():
         Path(a.out).write_text(json.dumps({"metrics": {}}), encoding="utf-8")
         return
 
-    model = json.loads(model_path.read_text(encoding="utf-8"))
-
-    # 特徴量の並びがコードと違うモデルは、例外を出さず「静かに誤った確率」を
-    # 返すため、ここで必ず照合する
-    names = model.get("feature_names")
-    if names != T.F.FEATURE_NAMES:
-        raise SystemExit(
-            "model.json の feature_names が features.py と一致しません。再学習してください"
-        )
-
-    w = np.array(model["weights"])
-    priors = {
-        "lane_prior": model.get("lane_prior", {}),
-        "racer_lane": model.get("racer_lane", {}),
-    }
+    m = model_io.load_model(model_path)  # feature_names の照合もここで行われる
 
     con = sqlite3.connect(a.db)
     races = T.load_races(con, a.start, a.end)
@@ -67,8 +54,20 @@ def main():
         Path(a.out).write_text(json.dumps({"metrics": {}}), encoding="utf-8")
         return
 
-    X, order, _ = T.build_matrices(races, priors)
-    metrics = T.evaluate(w, X, order, f"現行モデル @ {a.start}〜")
+    X, order, _ = T.build_matrices(races, m.priors)
+    V = np.array([m.utilities(rows) for rows in X])
+    mx = V.max(axis=1, keepdims=True)
+    prob = np.exp(V - mx)
+    prob /= prob.sum(axis=1, keepdims=True)
+    idx = np.arange(V.shape[0])
+    metrics = dict(
+        n=int(V.shape[0]),
+        win_accuracy=float((prob.argmax(axis=1) == order[:, 0]).mean()),
+        baseline_lane1=float((order[:, 0] == 0).mean()),
+        logloss=float(-np.log(np.clip(prob[idx, order[:, 0]], 1e-12, None)).mean()),
+    )
+    print(f"  [現行モデル({m.type}) @ {a.start}〜] N={metrics['n']}  "
+          f"1着的中率 {metrics['win_accuracy']:.3%}  LogLoss {metrics['logloss']:.4f}")
 
     Path(a.out).write_text(
         json.dumps({"metrics": {"test": metrics}}, ensure_ascii=False, indent=2),

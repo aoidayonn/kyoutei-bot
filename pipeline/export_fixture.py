@@ -49,6 +49,19 @@ SAMPLE_PRIORS = {
 
 def main():
     rows = F.build_features(SAMPLE_RACE, SAMPLE_PRIORS)
+
+    # 本番モデルがGBMなら、同じ入力に対する期待効用も出力する。
+    # TS側の木トラバーサル（gbm.ts）がPython実装と一致することをテストで固定する。
+    expected_utilities = None
+    model_path = OUT.parent.parent / "src" / "model.json"
+    if model_path.exists():
+        import model_io
+        try:
+            m = model_io.load_model(model_path)
+            model_rows = F.build_features(SAMPLE_RACE, m.priors)
+            expected_utilities = [round(u, 10) for u in m.utilities(model_rows)]
+        except SystemExit:
+            pass  # 特徴量不一致のときはこの後の再学習で直る
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(
         json.dumps(
@@ -57,6 +70,7 @@ def main():
                 "race": SAMPLE_RACE,
                 "priors": SAMPLE_PRIORS,
                 "expected": [[round(x, 10) for x in row] for row in rows],
+                "expected_utilities": expected_utilities,
             },
             ensure_ascii=False,
             indent=2,

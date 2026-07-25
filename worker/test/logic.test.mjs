@@ -92,7 +92,14 @@ test("オッズ表の読み取り順が120通りを重複なく網羅する", ()
 
 test("model.json に必要なキーが揃っている", () => {
   const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
-  for (const key of ["weights", "feature_names", "lane_prior", "racer_lane", "metrics"]) {
+  const required = ["feature_names", "lane_prior", "racer_lane", "metrics"];
+  // モデル形式ごとの必須キー
+  if ((model.model_type ?? "linear") === "lightgbm_rank") {
+    required.push("trees", "temperature", "stage_exponents");
+  } else {
+    required.push("weights");
+  }
+  for (const key of required) {
     assert.ok(key in model, `model.json に ${key} がありません`);
   }
   assert.equal(Object.keys(model.lane_prior).length, 144, "場×枠は24×6=144件のはずです");

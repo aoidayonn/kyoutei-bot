@@ -112,8 +112,8 @@ jobs:
       - name: 学習
         working-directory: pipeline
         run: |
-          python train.py --train-end ${{ steps.split.outputs.train_end }} \
-                          --out ../worker/src/model.json | tee ../train.log
+          python train_gbm.py --train-end ${{ steps.split.outputs.train_end }} \
+                              --out ../worker/src/model.json | tee ../train.log
 
       - name: バックテスト
         working-directory: pipeline

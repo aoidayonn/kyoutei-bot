@@ -10,6 +10,7 @@
 
 import model from "./model.json";
 import { buildFeatures, FEATURE_NAMES, type Priors, type RaceInput } from "./features";
+import { evalTrees, type Tree } from "./gbm";
 import {
   scoresFromUtilities,
   trifectaProbabilities,
@@ -21,28 +22,53 @@ import { stadiumName } from "./stadiums";
 
 export type { Pick };
 
-const WEIGHTS: number[] = model.weights as number[];
-const PRIORS: Priors = {
-  lane_prior: model.lane_prior as Record<string, number>,
-  racer_lane: (model.racer_lane ?? {}) as Record<string, number>,
+type ModelFile = {
+  model_type?: string;
+  feature_names?: string[];
+  weights?: number[];
+  trees?: Tree[];
+  temperature?: number;
+  lane_prior: Record<string, number>;
+  racer_lane?: Record<string, number>;
+  stage_exponents?: [number, number, number];
 };
-const STAGE_EXPONENTS = (model.stage_exponents ?? [1, 1, 1]) as [number, number, number];
+const MODEL = model as unknown as ModelFile;
+const MODEL_TYPE = MODEL.model_type ?? "linear";
+const PRIORS: Priors = {
+  lane_prior: MODEL.lane_prior,
+  racer_lane: MODEL.racer_lane ?? {},
+};
+const STAGE_EXPONENTS = (MODEL.stage_exponents ?? [1, 1, 1]) as [number, number, number];
 
 // モデルと実装の不整合はここで止める。
-// 特徴量の数や並びがズレていても行列積は例外を出さず「静かに誤った確率」を
+// 特徴量の数や並びがズレていても推論は例外を出さず「静かに誤った確率」を
 // 返し続けるため、起動時に落として気づけるようにする（死活監視が検知する）。
 {
-  const names = (model.feature_names ?? []) as string[];
-  if (WEIGHTS.length !== FEATURE_NAMES.length) {
-    throw new Error(
-      `model.json の重みが ${WEIGHTS.length} 本、実装の特徴量が ${FEATURE_NAMES.length} 個で一致しません。再学習が必要です`,
-    );
-  }
+  const names = MODEL.feature_names ?? [];
   if (names.length !== FEATURE_NAMES.length || names.some((n, i) => n !== FEATURE_NAMES[i])) {
     throw new Error(
       "model.json の feature_names が features.ts と一致しません。再学習が必要です",
     );
   }
+  if (MODEL_TYPE === "linear") {
+    if ((MODEL.weights ?? []).length !== FEATURE_NAMES.length) {
+      throw new Error("model.json の重みの本数が特徴量の数と一致しません");
+    }
+  } else if (MODEL_TYPE === "lightgbm_rank") {
+    if (!MODEL.trees?.length) throw new Error("model.json に木がありません");
+  } else {
+    throw new Error(`未知の model_type: ${MODEL_TYPE}`);
+  }
+}
+
+/** 特徴量行列 → 効用ベクトル（モデル形式を吸収する唯一の入口） */
+function computeUtilities(X: number[][]): number[] {
+  if (MODEL_TYPE === "lightgbm_rank") {
+    const t = MODEL.temperature ?? 1;
+    return X.map((row) => t * evalTrees(MODEL.trees!, row));
+  }
+  const w = MODEL.weights!;
+  return X.map((row) => row.reduce((acc, x, i) => acc + x * w[i], 0));
 }
 
 export interface Prediction {
@@ -100,9 +126,7 @@ export async function predict(
   };
 
   const X = buildFeatures(input, PRIORS);
-  const utilities = X.map((row) =>
-    row.reduce((acc, x, i) => acc + x * WEIGHTS[i], 0),
-  );
+  const utilities = computeUtilities(X);
   const scores = scoresFromUtilities(utilities);
   const winProbs = winProbabilities(scores);
   const combos = trifectaProbabilities(utilities, STAGE_EXPONENTS);

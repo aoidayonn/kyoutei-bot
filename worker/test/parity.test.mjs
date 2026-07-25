@@ -97,11 +97,58 @@ test("特徴量の数値が Python 側と一致している", async (t) => {
   }
 });
 
-test("model.json の重みの本数が特徴量の数と一致する", () => {
+test("model.json の構造が実装と整合している", () => {
   const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
-  assert.equal(
-    model.weights.length,
-    model.feature_names.length,
-    "重みの本数と特徴量の数が違います。学習をやり直してください",
-  );
+  const type = model.model_type ?? "linear";
+  if (type === "linear") {
+    assert.equal(model.weights.length, model.feature_names.length,
+      "重みの本数と特徴量の数が違います。学習をやり直してください");
+  } else if (type === "lightgbm_rank") {
+    assert.ok(Array.isArray(model.trees) && model.trees.length > 0, "木がありません");
+    assert.ok(typeof model.temperature === "number", "temperature がありません");
+    for (const tr of model.trees.slice(0, 5)) {
+      for (const key of ["f", "t", "l", "r", "v"]) assert.ok(key in tr, `木に ${key} がありません`);
+    }
+  } else {
+    assert.fail(`未知の model_type: ${type}`);
+  }
+});
+
+test("GBMの木トラバーサルが Python 実装と数値一致する", async (t) => {
+  const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
+  if ((model.model_type ?? "linear") !== "lightgbm_rank") {
+    t.skip("線形モデルなのでスキップ");
+    return;
+  }
+  const fixture = loadFixture();
+  if (!fixture?.expected_utilities) {
+    t.skip("fixture に expected_utilities がありません。export_fixture.py を実行してください");
+    return;
+  }
+
+  const { buildFeatures } = await import("../src/features.ts");
+  const { evalTrees } = await import("../src/gbm.ts");
+
+  const race = {
+    jcd: fixture.race.jcd,
+    windSpeed: fixture.race.wind_speed,
+    waveHeight: fixture.race.wave_height,
+    entries: fixture.race.entries.map((e) => ({
+      lane: e.lane, racerId: e.racer_id, racerClass: e.racer_class,
+      winRateNational: e.win_rate_national, top2National: e.top2_national,
+      winRateLocal: e.win_rate_local, top2Local: e.top2_local,
+      motorTop2: e.motor_top2, boatTop2: e.boat_top2,
+      age: e.age, weight: e.weight, exTime: e.ex_time,
+    })),
+  };
+  // 期待値は「本番モデルのpriors」で作られている（fixtureの合成priorsではない）
+  const priors = { lane_prior: model.lane_prior, racer_lane: model.racer_lane ?? {} };
+  const X = buildFeatures(race, priors);
+  const temp = model.temperature ?? 1;
+  X.forEach((row, i) => {
+    const u = temp * evalTrees(model.trees, row);
+    const diff = Math.abs(u - fixture.expected_utilities[i]);
+    assert.ok(diff < 1e-9,
+      `${i + 1}号艇の効用が一致しません: TS=${u} / Python=${fixture.expected_utilities[i]}`);
+  });
 });

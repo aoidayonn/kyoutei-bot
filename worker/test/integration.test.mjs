@@ -13,12 +13,22 @@ import { dirname, join } from "node:path";
 
 import { parseRacelist, parseBeforeInfo, parseOdds3t } from "../src/scrape.ts";
 import { buildFeatures } from "../src/features.ts";
+import { evalTrees } from "../src/gbm.ts";
 import { scoresFromUtilities, trifectaProbabilities, winProbabilities } from "../src/plackettLuce.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(join(here, "fixtures", n), "utf-8");
 const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
 const STAGE = model.stage_exponents ?? [1, 1, 1];
+
+/** モデル形式を吸収して効用を返す（predict.ts と同じ計算） */
+function utilitiesOf(X) {
+  if ((model.model_type ?? "linear") === "lightgbm_rank") {
+    const t = model.temperature ?? 1;
+    return X.map((row) => t * evalTrees(model.trees, row));
+  }
+  return X.map((row) => row.reduce((a, x, i) => a + x * model.weights[i], 0));
+}
 
 function buildPrediction() {
   const base = parseRacelist(fx("racelist.html"));
@@ -47,7 +57,7 @@ function buildPrediction() {
 
   const priors = { lane_prior: model.lane_prior, racer_lane: model.racer_lane ?? {} };
   const X = buildFeatures(race, priors);
-  const utilities = X.map((row) => row.reduce((a, x, i) => a + x * model.weights[i], 0));
+  const utilities = utilitiesOf(X);
   return {
     winProbs: winProbabilities(scoresFromUtilities(utilities)),
     combos: trifectaProbabilities(utilities, STAGE),
@@ -143,7 +153,7 @@ test("弱いイン・強いアウトのレースでは本命が1-2-3にならな
     ],
   };
   const X = buildFeatures(race, priors);
-  const u = X.map((row) => row.reduce((a, x, i) => a + x * model.weights[i], 0));
+  const u = utilitiesOf(X);
   const combos = trifectaProbabilities(u, STAGE);
 
   assert.notEqual(
