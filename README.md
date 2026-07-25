@@ -224,11 +224,14 @@ python export_fixture.py
 > `.env` / `.dev.vars` はどちらも `.gitignore` 済みです。
 
 ```bash
+# 秘密情報の誤コミットを防ぐフックを有効化（クローン後に一度だけ）
+git config core.hooksPath .githooks
+
 cd worker
 npm install
 
 # ローカル開発用の環境変数
-cp .dev.vars.example .dev.vars   # 中身を自分の値に書き換える
+cp .dev.vars.example .dev.vars   # ← コピーした .dev.vars の方に実際の値を書く
 
 # D1（予想の記録用）を作成し、出力された database_id を wrangler.toml に貼る
 npx wrangler d1 create kyoutei
