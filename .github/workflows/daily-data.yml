@@ -9,9 +9,12 @@ name: 日次データ更新
 # 1年ずつ3回に分けて実行すること（取得済みファイルはスキップされるので、
 # 途中で失敗しても同じ範囲を再実行すれば続きから進む）。
 #
-#   1回目: start=2023-08-01  end=2024-07-31
-#   2回目: start=2024-08-01  end=2025-07-31
-#   3回目: start=2025-08-01  end=(今日)
+#   1回目: start=2023-07-01  end=2024-06-30
+#   2回目: start=2024-07-01  end=2025-06-30
+#   3回目: start=2025-07-01  end=(今日)
+#
+# 月末の日付に注意（4/6/9/11月は30日まで、2月は28か29日まで）。
+# 存在しない日付を入れると「期間を決める」ステップで止まる。
 
 permissions:
   contents: read
@@ -58,8 +61,19 @@ jobs:
           END="${{ github.event.inputs.end }}"
           [ -z "$START" ] && START=$(date -u -d "yesterday +9 hours" +%F)
           [ -z "$END" ] && END=$START
+
+          # 存在しない日付（2025-06-31 など）はここで弾く。
+          # そのまま流すと download.py が分かりにくいエラーで落ちる。
+          for D in "$START" "$END"; do
+            if ! date -d "$D" +%F > /dev/null 2>&1; then
+              echo "::error::日付 $D は存在しません。月末の日数を確認してください（4/6/9/11月は30日、2月は28か29日）"
+              exit 1
+            fi
+          done
+
           echo "start=$START" >> $GITHUB_OUTPUT
           echo "end=$END" >> $GITHUB_OUTPUT
+          echo "期間: $START 〜 $END"
 
       - name: 番組表・競走成績のダウンロード
         working-directory: pipeline

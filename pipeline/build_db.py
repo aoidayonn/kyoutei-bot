@@ -180,8 +180,11 @@ def main():
                    help="パースに使うプロセス数（既定: CPU数-1）")
     a = p.parse_args()
 
-    start = dt.date.fromisoformat(a.start)
-    end = dt.date.fromisoformat(a.end) if a.end else start
+    # 日付の妥当性チェックは download.py と共通（「6月31日」などを分かりやすく弾く）
+    from download import parse_date
+
+    start = parse_date(a.start, "--start")
+    end = parse_date(a.end, "--end") if a.end else start
 
     days = []
     day = start

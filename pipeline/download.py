@@ -24,9 +24,11 @@
 from __future__ import annotations
 
 import argparse
+import calendar
 import datetime as dt
 import io
 import random
+import re
 import sys
 import threading
 import time
@@ -168,6 +170,34 @@ def fetch_range(start: dt.date, end: dt.date, kinds=("B", "K"),
         print("失敗したファイルは、同じコマンドをもう一度実行すれば再取得されます。")
 
 
+def parse_date(text: str, label: str) -> dt.date:
+    """YYYY-MM-DD を日付にする。存在しない日付は理由を添えて弾く。
+
+    「6月31日」のような実在しない日付を渡したときに
+    ValueError: day is out of range for month とだけ出ても原因が分かりにくいので、
+    何がおかしいのかをはっきり伝える。
+    """
+    try:
+        return dt.date.fromisoformat(text)
+    except ValueError:
+        pass
+
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", (text or "").strip())
+    if m:
+        year, month, day = (int(x) for x in m.groups())
+        if 1 <= month <= 12:
+            last = calendar.monthrange(year, month)[1]
+            if day > last:
+                raise SystemExit(
+                    f"{label} の日付 {text} は存在しません。"
+                    f"{year}年{month}月は{last}日までです（{year}-{month:02d}-{last} では？）"
+                )
+        else:
+            raise SystemExit(f"{label} の月が不正です: {text}")
+
+    raise SystemExit(f"{label} は YYYY-MM-DD 形式で指定してください（受け取った値: {text}）")
+
+
 def main():
     p = argparse.ArgumentParser(
         description="番組表・競走成績のダウンロード",
@@ -183,10 +213,10 @@ def main():
     p.add_argument("--force", action="store_true", help="既存ファイルも再取得")
     a = p.parse_args()
 
-    start = dt.date.fromisoformat(a.start)
-    end = dt.date.fromisoformat(a.end) if a.end else start
+    start = parse_date(a.start, "--start")
+    end = parse_date(a.end, "--end") if a.end else start
     if end < start:
-        raise SystemExit("--end が --start より前になっています")
+        raise SystemExit(f"--end ({end}) が --start ({start}) より前になっています")
 
     fetch_range(start, end, tuple(a.kinds), a.force, a.workers, a.retries)
 
