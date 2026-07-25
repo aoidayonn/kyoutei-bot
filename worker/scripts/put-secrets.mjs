@@ -76,13 +76,23 @@ if (hasError) {
   process.exit(1);
 }
 
+// Windows では Node 18.20 以降、.cmd ファイルを shell なしで spawn すると
+// EINVAL になる（セキュリティ修正の副作用）。npx.cmd を直接叩かず、
+// wrangler の JS 本体を node で実行することで OS 差を吸収する。
+const wranglerJs = join(here, "..", "node_modules", "wrangler", "bin", "wrangler.js");
+
 function putSecret(name, value) {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      process.platform === "win32" ? "npx.cmd" : "npx",
-      ["wrangler", "secret", "put", name],
-      { stdio: ["pipe", "inherit", "inherit"] },
-    );
+    const useDirect = existsSync(wranglerJs);
+    const child = useDirect
+      ? spawn(process.execPath, [wranglerJs, "secret", "put", name], {
+          stdio: ["pipe", "inherit", "inherit"],
+        })
+      : spawn("npx", ["wrangler", "secret", "put", name], {
+          stdio: ["pipe", "inherit", "inherit"],
+          shell: true, // npx.cmd を解決するために必要
+        });
+
     child.stdin.write(value);
     child.stdin.end();
     child.on("close", (code) =>
