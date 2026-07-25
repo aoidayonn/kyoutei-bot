@@ -1,0 +1,41 @@
+name: オッズ収集
+
+# 公式は過去オッズを公開していないため、自分で貯める。
+# これが数週間たまると「期待値1.05超だけ買う」戦略の本当の回収率を検証できる。
+
+on:
+  schedule:
+    # JST 12:00 / 15:00 / 18:00 / 20:30 の4回（レース開催時間帯をカバー）
+    - cron: "0 3,6,9 * * *"
+    - cron: "30 11 * * *"
+  workflow_dispatch:
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install requests
+
+      - name: 既存のオッズDBを復元
+        uses: actions/cache@v4
+        with:
+          path: data/odds.db
+          key: odds-db-${{ github.run_id }}
+          restore-keys: odds-db-
+
+      - name: オッズを取得
+        working-directory: pipeline
+        run: python snapshot_odds.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: odds-db
+          path: data/odds.db
+          retention-days: 90

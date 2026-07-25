@@ -1,0 +1,21 @@
+name = "kyoutei-bot"
+main = "src/index.ts"
+compatibility_date = "2025-01-01"
+
+# 無料枠で動かす。Workers Free は 10万リクエスト/日まで。
+workers_dev = true
+
+[observability]
+enabled = true
+
+# 予想を残して後から的中率・回収率を検証するためのD1。
+# 事前に `npx wrangler d1 create kyoutei` を実行し、出力された database_id を貼る。
+[[d1_databases]]
+binding = "DB"
+database_name = "kyoutei"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# 秘密情報は wrangler secret put で登録する（このファイルには書かない）:
+#   npx wrangler secret put LINE_CHANNEL_SECRET
+#   npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+#   npx wrangler secret put ALLOWED_USER_ID

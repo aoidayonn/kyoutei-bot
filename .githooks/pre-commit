@@ -1,0 +1,60 @@
+#!/bin/sh
+# 秘密情報の誤コミットを止めるフック。
+#
+# 有効化（クローン後に一度だけ）:
+#   git config core.hooksPath .githooks
+#
+# 一度GitHubにPushしてしまうと、後からコミットを消しても
+# 「公開された」事実は取り消せません（クロールされている前提で考える）。
+# なので、Pushの前ではなく **コミットの時点で** 止めます。
+
+set -e
+
+fail() {
+    echo ""
+    echo "  ✖ コミットを中止しました: $1"
+    echo ""
+    echo "  対処:"
+    echo "    - 実際の値は .dev.vars（gitignore済み）に置く"
+    echo "    - サンプルファイルにはプレースホルダだけ書く"
+    echo "    - 誤って書いてしまったトークンは LINE Developers で再発行する"
+    echo ""
+    exit 1
+}
+
+# 追跡してはいけないファイルが staged に入っていないか
+for forbidden in ".dev.vars" ".env"; do
+    if git diff --cached --name-only | grep -qx "$forbidden"; then
+        fail "$forbidden をコミットしようとしています"
+    fi
+done
+
+# staged の中身に本物らしき秘密情報が混ざっていないか
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+[ -z "$staged" ] && exit 0
+
+for file in $staged; do
+    [ -f "$file" ] || continue
+    case "$file" in
+        *.db|*.lzh|*.png|*.jpg|*.pdf) continue ;;
+    esac
+
+    content=$(git show ":$file" 2>/dev/null || true)
+
+    # LINEチャネルシークレット: 32桁の16進数
+    if echo "$content" | grep -qiE 'LINE_CHANNEL_SECRET[[:space:]]*=[[:space:]]*[0-9a-f]{32}'; then
+        fail "$file にLINEチャネルシークレットらしき値があります"
+    fi
+
+    # LINEアクセストークン: 100文字以上のBase64
+    if echo "$content" | grep -qE 'LINE_CHANNEL_ACCESS_TOKEN[[:space:]]*=[[:space:]]*[A-Za-z0-9+/=]{100,}'; then
+        fail "$file にLINEアクセストークンらしき値があります"
+    fi
+
+    # Cloudflare APIトークン
+    if echo "$content" | grep -qiE 'CLOUDFLARE_API_TOKEN[[:space:]]*=[[:space:]]*[A-Za-z0-9_-]{30,}'; then
+        fail "$file にCloudflare APIトークンらしき値があります"
+    fi
+done
+
+exit 0

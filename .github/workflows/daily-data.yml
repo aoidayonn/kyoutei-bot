@@ -1,0 +1,75 @@
+name: 日次データ更新
+
+# 前日のレース結果を取り込む。
+# GitHub Actions の無料枠は publicリポジトリなら無制限、privateでも月2,000分。
+# このジョブは1回あたり2〜3分なので余裕で収まる。
+
+on:
+  schedule:
+    # 毎日 JST 5:00（UTC 20:00）。前日の成績が確定している時間帯。
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "取得開始日 YYYY-MM-DD（省略時は前日）"
+        required: false
+      end:
+        description: "取得終了日 YYYY-MM-DD"
+        required: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 依存関係のインストール
+        run: pip install -r pipeline/requirements.txt
+
+      - name: データベースを復元
+        uses: actions/cache@v4
+        with:
+          path: data/kyotei.db
+          key: kyotei-db-${{ github.run_id }}
+          restore-keys: kyotei-db-
+
+      - name: 期間を決める
+        id: range
+        run: |
+          START="${{ github.event.inputs.start }}"
+          END="${{ github.event.inputs.end }}"
+          [ -z "$START" ] && START=$(date -u -d "yesterday +9 hours" +%F)
+          [ -z "$END" ] && END=$START
+          echo "start=$START" >> $GITHUB_OUTPUT
+          echo "end=$END" >> $GITHUB_OUTPUT
+
+      - name: 番組表・競走成績のダウンロード
+        working-directory: pipeline
+        run: python download.py --start ${{ steps.range.outputs.start }} --end ${{ steps.range.outputs.end }} --workers 8
+
+      - name: データベースへ取り込み
+        working-directory: pipeline
+        run: python build_db.py --start ${{ steps.range.outputs.start }} --end ${{ steps.range.outputs.end }} --jobs 2
+
+      - name: 取り込み結果の確認
+        run: |
+          python - <<'EOF'
+          import sqlite3
+          con = sqlite3.connect("data/kyotei.db")
+          n, = con.execute("select count(*) from races where trifecta is not null").fetchone()
+          lo, hi = con.execute("select min(date), max(date) from races").fetchone()
+          print(f"結果確定レース: {n:,} 件 ({lo} 〜 {hi})")
+          assert n > 0, "レースが1件も入っていません"
+          EOF
+
+      - name: データベースを保存
+        uses: actions/upload-artifact@v4
+        with:
+          name: kyotei-db
+          path: data/kyotei.db
+          retention-days: 30

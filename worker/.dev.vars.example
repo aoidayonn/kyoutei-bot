@@ -1,0 +1,22 @@
+# ⚠️ このファイルはGitHubに公開されます。実際の値を書かないでください。
+#
+# 使い方:
+#   cp .dev.vars.example .dev.vars
+# として、コピーした .dev.vars（gitignore済み）の方に実際の値を書きます。
+#
+# 重要: wrangler は .env を読みません。ローカル開発では .dev.vars を使います。
+#       デプロイ先には別途 secret を登録してください:
+#
+#         npx wrangler secret put LINE_CHANNEL_SECRET
+#         npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
+#         npx wrangler secret put ALLOWED_USER_ID
+
+# LINE Developers > チャネル基本設定 > チャネルシークレット
+LINE_CHANNEL_SECRET=your_channel_secret_here
+
+# LINE Developers > Messaging API設定 > チャネルアクセストークン（長期）
+LINE_CHANNEL_ACCESS_TOKEN=your_channel_access_token_here
+
+# 自分のLINE userId（任意）。設定すると自分以外からのメッセージを無視します。
+# userId は Webhook のログで確認できます。
+ALLOWED_USER_ID=

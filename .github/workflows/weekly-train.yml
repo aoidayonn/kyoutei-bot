@@ -1,0 +1,70 @@
+name: 週次モデル再学習
+
+# 溜まったデータでモデルを学習し直し、worker/src/model.json を更新してPRを作る。
+# 自動マージはしない。バックテストの数字を人間が見てから取り込む。
+
+on:
+  schedule:
+    # 毎週月曜 JST 6:00（UTC 日曜 21:00）
+    - cron: "0 21 * * 0"
+  workflow_dispatch:
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r pipeline/requirements.txt
+
+      - name: データベースを取得
+        uses: actions/download-artifact@v4
+        with:
+          name: kyotei-db
+          path: data
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id || github.run_id }}
+        continue-on-error: true
+
+      - name: 学習期間を決める（直近3か月を検証用に残す）
+        id: split
+        run: echo "train_end=$(date -u -d '3 months ago' +%F)" >> $GITHUB_OUTPUT
+
+      - name: 学習
+        working-directory: pipeline
+        run: |
+          python train.py --train-end ${{ steps.split.outputs.train_end }} \
+                          --out ../worker/src/model.json | tee ../train.log
+
+      - name: バックテスト
+        working-directory: pipeline
+        run: |
+          python backtest.py --start ${{ steps.split.outputs.train_end }} | tee ../backtest.log
+
+      - name: 特徴量フィクスチャの再生成
+        working-directory: pipeline
+        run: python export_fixture.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: テスト（PythonとTypeScriptの特徴量が一致するか）
+        working-directory: worker
+        run: npm test
+
+      - name: 結果をPRにする
+        uses: peter-evans/create-pull-request@v6
+        with:
+          branch: auto/retrain
+          title: "モデル再学習（${{ steps.split.outputs.train_end }} まで）"
+          commit-message: "chore: モデルを再学習"
+          body-path: backtest.log
+          add-paths: |
+            worker/src/model.json
+            worker/test/fixture.json
