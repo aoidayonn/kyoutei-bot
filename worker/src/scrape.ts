@@ -278,20 +278,53 @@ export async function fetchOdds(
   }
 }
 
+// ---------------------------------------------------------------- レース結果
+
+export interface RaceResult {
+  trifecta: string | null; // "1-4-2"
+  payout: number | null; // 100円あたりの払戻金
+  popularity: number | null; // 何番人気だったか
+}
+
+/**
+ * 結果ページの払戻金表から3連単の行を読む。
+ *
+ *   <td rowspan="2">3連単</td>
+ *   <td>... <span class="numberSet1_number is-type1">1</span> - 4 - 2 ...</td>
+ *   <td><span class="is-payout1">&yen;1,530</span></td>
+ *   <td>3</td>            ← 人気
+ *
+ * 中止・不成立のレースでは払戻が空になるので、その場合は null を返す。
+ */
+export function parseRaceResult(html: string): RaceResult {
+  const empty: RaceResult = { trifecta: null, payout: null, popularity: null };
+
+  const row = html.match(/3連単<\/td>([\s\S]*?)<\/tr>/);
+  if (!row) return empty;
+
+  const numbers = [...row[1].matchAll(/numberSet1_number[^>]*>\s*([1-6])\s*</g)].map(
+    (m) => m[1],
+  );
+  if (numbers.length < 3) return empty;
+
+  const payoutMatch = row[1].match(/is-payout1[^>]*>\s*(?:&yen;|¥)([\d,]+)/);
+  const popMatch = row[1].match(/<td>\s*(\d+)\s*<\/td>\s*$/);
+
+  return {
+    trifecta: numbers.slice(0, 3).join("-"),
+    payout: payoutMatch ? parseInt(payoutMatch[1].replace(/,/g, ""), 10) : null,
+    popularity: popMatch ? parseInt(popMatch[1], 10) : null,
+  };
+}
+
 export async function fetchResult(
   jcd: number,
   rno: number,
   hd: string,
-): Promise<{ trifecta: string | null; payout: number | null }> {
+): Promise<RaceResult> {
   try {
-    const html = await get(`${BASE}/raceresult${q(jcd, rno, hd)}`);
-    const m = html.match(/3連単[\s\S]{0,600}?([1-6])\s*<[\s\S]{0,80}?([1-6])\s*<[\s\S]{0,80}?([1-6])\s*<[\s\S]{0,400}?¥([\d,]+)/);
-    if (!m) return { trifecta: null, payout: null };
-    return {
-      trifecta: `${m[1]}-${m[2]}-${m[3]}`,
-      payout: parseInt(m[4].replace(/,/g, ""), 10),
-    };
+    return parseRaceResult(await get(`${BASE}/raceresult${q(jcd, rno, hd)}`));
   } catch {
-    return { trifecta: null, payout: null };
+    return { trifecta: null, payout: null, popularity: null };
   }
 }

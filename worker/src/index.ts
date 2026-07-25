@@ -10,6 +10,8 @@
 import { predict } from "./predict";
 import { parseCommand, STADIUMS, stadiumName } from "./stadiums";
 import { predictionFlex, predictionText, reply, textMessage, verifySignature } from "./line";
+import { settlePredictions } from "./settle";
+import { formatSummary, summarize, type PredictionRow } from "./stats";
 
 export interface Env {
   LINE_CHANNEL_SECRET: string;
@@ -27,6 +29,7 @@ const HELP = [
   "  24 12   （場コードでも可）",
   "",
   "「今日」と送ると本日の開催場一覧を返します。",
+  "「成績」と送るとこれまでの予想の実績を表示します。",
   "「whoami」と送ると自分のuserIdを表示します。",
 ].join("\n");
 
@@ -46,9 +49,62 @@ export default {
       return handleDebugPredict(url);
     }
 
+    if (url.pathname === "/stats") {
+      return new Response(await buildStats(env), {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
+      });
+    }
+
+    // 手動で答え合わせを走らせる（Cronを待たずに確認したいとき）
+    if (url.pathname === "/settle" && request.method === "POST") {
+      if (!env.DB) return new Response("D1が設定されていません", { status: 500 });
+      return Response.json(await settlePredictions(env.DB));
+    }
+
     return new Response("kyoutei-bot", { status: 200 });
   },
+
+  /**
+   * Cron Trigger。予想の答え合わせを行う。
+   * これがないと predictions に未確定の行が溜まり続け、
+   * 「実際に当たっていたのか」が永久に分からなくなる。
+   */
+  async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    if (!env.DB) {
+      console.log("D1が設定されていないため答え合わせをスキップ");
+      return;
+    }
+    ctx.waitUntil(
+      settlePredictions(env.DB)
+        .then((r) =>
+          console.log(
+            `答え合わせ: ${r.settled}/${r.checked} 件を確定（残り ${r.pending} 件）`,
+          ),
+        )
+        .catch((e) => console.error("答え合わせに失敗", e)),
+    );
+  },
 };
+
+// ---------------------------------------------------------------- 成績
+
+async function buildStats(env: Env): Promise<string> {
+  if (!env.DB) return "D1が設定されていないため成績を記録していません。";
+
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT race_id, hd, jcd, rno, verdict, picks_json, win_probs_json, actual, payout
+         FROM predictions ORDER BY hd DESC LIMIT 1000`,
+    ).all<PredictionRow>();
+
+    const rows = results ?? [];
+    const unsettled = rows.filter((r) => !r.actual).length;
+    return formatSummary(summarize(rows), unsettled);
+  } catch (e) {
+    console.error(e);
+    return "成績の集計に失敗しました。";
+  }
+}
 
 // ---------------------------------------------------------------- Webhook
 
@@ -115,6 +171,15 @@ async function handleEvent(event: LineEvent, env: Env) {
 
   if (!text || /^(help|ヘルプ|使い方|？|\?)$/i.test(text)) {
     await reply(replyToken, [textMessage(HELP)], env.LINE_CHANNEL_ACCESS_TOKEN);
+    return;
+  }
+
+  if (/^(成績|せいせき|実績|stats)$/i.test(text)) {
+    await reply(
+      replyToken,
+      [textMessage(await buildStats(env))],
+      env.LINE_CHANNEL_ACCESS_TOKEN,
+    );
     return;
   }
 

@@ -8,6 +8,12 @@ workers_dev = true
 [observability]
 enabled = true
 
+# 予想の答え合わせ。JST 23:30 と 翌 05:00 の2回。
+# 1回で最大40レースまで処理し、残りは次回に回す
+# （Workers Free はリクエストあたりのサブリクエストが50までのため）。
+[triggers]
+crons = ["30 14 * * *", "0 20 * * *"]
+
 # 予想を残して後から的中率・回収率を検証するためのD1。
 # `npx wrangler d1 create kyoutei` の出力にある database_id を貼る。
 # これは識別子であって秘密情報ではないので、コミットして問題ない。
