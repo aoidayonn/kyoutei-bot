@@ -32,6 +32,14 @@ on:
         type: boolean
         default: false
 
+# 既定のシェルは `bash -e` で pipefail が無い。
+# `cmd | tee log` と書くと tee の終了コードが採用され、
+# cmd が失敗しても成功扱いになる（実際にこれで壊れたモデルがデプロイされた）。
+# `shell: bash` を指定すると `bash --noprofile --norc -eo pipefail` になる。
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: write
 
@@ -117,12 +125,21 @@ jobs:
         id: compare
         working-directory: pipeline
         run: |
-          if python compare_models.py /tmp/current-metrics.json ../worker/src/model.json | tee ../compare.log; then
+          # パイプ越しに終了コードを見ない。tee が成功を返して判定が壊れるため。
+          set +e
+          python compare_models.py /tmp/current-metrics.json ../worker/src/model.json > ../compare.log 2>&1
+          RESULT=$?
+          set -e
+          cat ../compare.log
+
+          if [ $RESULT -eq 0 ]; then
+            echo "判定: 採用"
             echo "adopt=true" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.force }}" = "true" ]; then
-            echo "強制採用が指定されています"
+            echo "判定: 改善なしだが強制採用が指定されている"
             echo "adopt=true" >> $GITHUB_OUTPUT
           else
+            echo "判定: 見送り（現行モデルのまま）"
             echo "adopt=false" >> $GITHUB_OUTPUT
           fi
 

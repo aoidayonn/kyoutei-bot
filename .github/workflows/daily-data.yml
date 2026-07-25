@@ -16,6 +16,14 @@ name: 日次データ更新
 # 月末の日付に注意（4/6/9/11月は30日まで、2月は28か29日まで）。
 # 存在しない日付を入れると「期間を決める」ステップで止まる。
 
+# 既定のシェルは `bash -e` で pipefail が無い。
+# `cmd | tee log` と書くと tee の終了コードが採用され、
+# cmd が失敗しても成功扱いになる（実際にこれで壊れたモデルがデプロイされた）。
+# `shell: bash` を指定すると `bash --noprofile --norc -eo pipefail` になる。
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
 

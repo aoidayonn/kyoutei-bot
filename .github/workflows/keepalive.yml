@@ -16,6 +16,14 @@ on:
     - cron: "0 0 1 * *"
   workflow_dispatch:
 
+# 既定のシェルは `bash -e` で pipefail が無い。
+# `cmd | tee log` と書くと tee の終了コードが採用され、
+# cmd が失敗しても成功扱いになる（実際にこれで壊れたモデルがデプロイされた）。
+# `shell: bash` を指定すると `bash --noprofile --norc -eo pipefail` になる。
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: write
 
