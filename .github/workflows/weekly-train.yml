@@ -2,16 +2,30 @@ name: 週次モデル再学習
 
 # 溜まったデータでモデルを学習し直し、worker/src/model.json を更新してPRを作る。
 # 自動マージはしない。バックテストの数字を人間が見てから取り込む。
+#
+# 事前に必要な設定（一度だけ）:
+#   Settings > Actions > General > Workflow permissions
+#     - "Read and write permissions" を選択
+#     - "Allow GitHub Actions to create and approve pull requests" にチェック
 
 on:
   schedule:
     # 毎週月曜 JST 6:00（UTC 日曜 21:00）
     - cron: "0 21 * * 0"
   workflow_dispatch:
+    inputs:
+      train_end:
+        description: "学習に使う最終日 YYYY-MM-DD（省略時は3か月前）"
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
 
 jobs:
   train:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -22,18 +36,39 @@ jobs:
 
       - run: pip install -r pipeline/requirements.txt
 
-      - name: データベースを取得
-        uses: actions/download-artifact@v4
+      # daily-data.yml と同じキャッシュを共有する。
+      # download-artifact は run-id の指定が必要で、別ワークフローの成果物を
+      # 拾うのが面倒なので cache に統一している。
+      - name: データベースを復元
+        id: db
+        uses: actions/cache/restore@v4
         with:
-          name: kyotei-db
-          path: data
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id || github.run_id }}
-        continue-on-error: true
+          path: data/kyotei.db
+          key: kyotei-db-
+          restore-keys: kyotei-db-
+
+      - name: データベースがあるか確認
+        run: |
+          if [ ! -f data/kyotei.db ]; then
+            echo "::error::data/kyotei.db がありません。先に「日次データ更新」を実行してください。"
+            exit 1
+          fi
+          python - <<'EOF'
+          import sqlite3
+          con = sqlite3.connect("data/kyotei.db")
+          n, = con.execute("select count(*) from races where trifecta is not null").fetchone()
+          lo, hi = con.execute("select min(date), max(date) from races").fetchone()
+          print(f"結果確定レース: {n:,} 件 ({lo} 〜 {hi})")
+          assert n >= 10000, f"学習に足りません（{n} 件）"
+          EOF
 
       - name: 学習期間を決める（直近3か月を検証用に残す）
         id: split
-        run: echo "train_end=$(date -u -d '3 months ago' +%F)" >> $GITHUB_OUTPUT
+        run: |
+          END="${{ github.event.inputs.train_end }}"
+          [ -z "$END" ] && END=$(date -u -d '3 months ago' +%F)
+          echo "train_end=$END" >> $GITHUB_OUTPUT
+          echo "test_start=$(date -u -d "$END +1 day" +%F)" >> $GITHUB_OUTPUT
 
       - name: 学習
         working-directory: pipeline
@@ -44,7 +79,7 @@ jobs:
       - name: バックテスト
         working-directory: pipeline
         run: |
-          python backtest.py --start ${{ steps.split.outputs.train_end }} | tee ../backtest.log
+          python backtest.py --start ${{ steps.split.outputs.test_start }} | tee ../backtest.log
 
       - name: 特徴量フィクスチャの再生成
         working-directory: pipeline
@@ -56,15 +91,33 @@ jobs:
 
       - name: テスト（PythonとTypeScriptの特徴量が一致するか）
         working-directory: worker
-        run: npm test
+        run: |
+          npm ci || npm install
+          npm test
+
+      - name: PR本文を組み立てる
+        run: |
+          {
+            echo "## 学習"
+            echo '```'
+            cat train.log
+            echo '```'
+            echo "## バックテスト"
+            echo '```'
+            cat backtest.log
+            echo '```'
+            echo ""
+            echo "回収率が前回より下がっていないか確認してからマージしてください。"
+          } > pr-body.md
 
       - name: 結果をPRにする
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v7
         with:
           branch: auto/retrain
           title: "モデル再学習（${{ steps.split.outputs.train_end }} まで）"
           commit-message: "chore: モデルを再学習"
-          body-path: backtest.log
+          body-path: pr-body.md
+          delete-branch: true
           add-paths: |
             worker/src/model.json
             worker/test/fixture.json

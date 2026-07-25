@@ -4,6 +4,9 @@ name: 日次データ更新
 # GitHub Actions の無料枠は publicリポジトリなら無制限、privateでも月2,000分。
 # このジョブは1回あたり2〜3分なので余裕で収まる。
 
+permissions:
+  contents: read
+
 on:
   schedule:
     # 毎日 JST 5:00（UTC 20:00）。前日の成績が確定している時間帯。
@@ -32,10 +35,10 @@ jobs:
         run: pip install -r pipeline/requirements.txt
 
       - name: データベースを復元
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: data/kyotei.db
-          key: kyotei-db-${{ github.run_id }}
+          key: kyotei-db-
           restore-keys: kyotei-db-
 
       - name: 期間を決める
@@ -67,9 +70,9 @@ jobs:
           assert n > 0, "レースが1件も入っていません"
           EOF
 
+      # 週次学習ワークフローも同じキャッシュを読む
       - name: データベースを保存
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v4
         with:
-          name: kyotei-db
           path: data/kyotei.db
-          retention-days: 30
+          key: kyotei-db-${{ github.run_id }}
