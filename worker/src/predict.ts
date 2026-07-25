@@ -14,10 +14,12 @@ import {
   scoresFromUtilities,
   trifectaProbabilities,
   winProbabilities,
-  type Combo,
 } from "./plackettLuce";
+import { buildPicks, selectPicks, DEFAULT_OPTIONS, type Pick } from "./selection";
 import { fetchOdds, fetchRace, type ScrapedRace } from "./scrape";
 import { stadiumName } from "./stadiums";
+
+export type { Pick };
 
 const WEIGHTS: number[] = model.weights as number[];
 const PRIORS: Priors = {
@@ -25,13 +27,6 @@ const PRIORS: Priors = {
   racer_lane: (model.racer_lane ?? {}) as Record<string, number>,
 };
 const STAGE_EXPONENTS = (model.stage_exponents ?? [1, 1, 1]) as [number, number, number];
-
-export interface Pick {
-  combo: string;
-  prob: number;
-  odds: number | null;
-  ev: number | null;
-}
 
 export interface Prediction {
   jcd: number;
@@ -52,9 +47,6 @@ export interface Prediction {
   race: ScrapedRace;
 }
 
-/** 期待値の閾値。オッズは締切直前まで動くので少し余裕を持たせる。 */
-const EV_THRESHOLD = 1.05;
-const MAX_PICKS = 5;
 
 export async function predict(
   jcd: number,
@@ -93,19 +85,9 @@ export async function predict(
   const winProbs = winProbabilities(scores);
   const combos = trifectaProbabilities(utilities, STAGE_EXPONENTS);
 
-  const withEv: Pick[] = combos.map((c: Combo) => {
-    const o = odds[c.combo] ?? null;
-    return { combo: c.combo, prob: c.prob, odds: o, ev: o === null ? null : c.prob * o };
-  });
-
-  const byProb = withEv.slice(0, MAX_PICKS);
-
-  const candidates = withEv
-    .filter((p) => p.ev !== null && p.ev >= EV_THRESHOLD)
-    // 期待値だけだと超万券に偏るので、確率が低すぎるものは落とす
-    .filter((p) => p.prob >= 0.005)
-    .sort((a, b) => (b.ev! - a.ev!));
-  const byEv = candidates.slice(0, MAX_PICKS);
+  const withEv = buildPicks(combos, odds, DEFAULT_OPTIONS.modelWeight);
+  const byProb = withEv.slice(0, DEFAULT_OPTIONS.maxPicks);
+  const byEv = selectPicks(withEv);
 
   return {
     jcd,
@@ -192,10 +174,15 @@ function buildReasons(
         );
       }
     }
+    reasons.push(
+      "確率は市場オッズを事前分布としてモデルで補正した値（モデル単体は穴目を過大評価するため）",
+    );
   }
 
   if (!hasOdds) {
-    reasons.push("オッズを取得できなかったため、期待値の判定はできていない");
+    reasons.push(
+      "オッズを取得できず期待値を判定できていない。この状態の推奨は参考程度に",
+    );
   } else if (byEv.length === 0) {
     reasons.push("期待値が基準を超える買い目がなく、このレースは見送り推奨");
   }
