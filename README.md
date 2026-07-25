@@ -151,10 +151,10 @@ cd pipeline
 pip install -r requirements.txt
 
 # 3年分ダウンロード（8並列で30〜50分。中断しても再実行すれば続きから）
-python download.py --start 2023-07-01 --end 2026-07-24 --workers 8
+python download.py --start 2023-08-01 --end 2026-07-24 --workers 8
 
 # SQLite に取り込む（CPUコア数に応じて並列パース）
-python build_db.py --start 2023-07-01 --end 2026-07-24 --jobs 4
+python build_db.py --start 2023-08-01 --end 2026-07-24 --jobs 4
 
 # 学習（直近3か月は検証用に残す）
 python train.py --train-end 2026-04-30 --out ../worker/src/model.json

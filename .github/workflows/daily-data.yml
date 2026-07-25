@@ -1,8 +1,17 @@
 name: 日次データ更新
 
-# 前日のレース結果を取り込む。
-# GitHub Actions の無料枠は publicリポジトリなら無制限、privateでも月2,000分。
-# このジョブは1回あたり2〜3分なので余裕で収まる。
+# 前日のレース結果を取り込む。通常は1回2〜3分で終わる。
+#
+# 過去データをまとめて取り込む（バックフィル）にも使える。
+# その場合は Run workflow から start / end を指定する。
+# GitHubのランナーは海外にあり boatrace.jp への往復が遅いので、
+# 1年分でおよそ15〜20分かかる。3年分を一度に流さず、
+# 1年ずつ3回に分けて実行すること（取得済みファイルはスキップされるので、
+# 途中で失敗しても同じ範囲を再実行すれば続きから進む）。
+#
+#   1回目: start=2023-08-01  end=2024-07-31
+#   2回目: start=2024-08-01  end=2025-07-31
+#   3回目: start=2025-08-01  end=(今日)
 
 permissions:
   contents: read
@@ -23,6 +32,7 @@ on:
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
