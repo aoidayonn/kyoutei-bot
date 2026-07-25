@@ -11,12 +11,17 @@ import { predict } from "./predict";
 import { parseCommand, STADIUMS, stadiumName } from "./stadiums";
 import { predictionFlex, predictionText, reply, textMessage, verifySignature } from "./line";
 import { settlePredictions } from "./settle";
+import { todayJst } from "./time";
 import { formatSummary, summarize, type PredictionRow } from "./stats";
 
 export interface Env {
   LINE_CHANNEL_SECRET: string;
   LINE_CHANNEL_ACCESS_TOKEN: string;
   ALLOWED_USER_ID?: string; // 自分だけが使えるようにする（任意）
+  /** 設定すると /stats /settle に ?key= または X-Admin-Key ヘッダが必要になる。
+   *  成績（個人データ）の閲覧と、答え合わせの起動（D1書き込み+外部fetch）を
+   *  第三者に開放しないための鍵。未設定なら従来通り誰でも叩ける。 */
+  ADMIN_KEY?: string;
   DB?: D1Database;
 }
 
@@ -50,6 +55,7 @@ export default {
     }
 
     if (url.pathname === "/stats") {
+      if (!authorized(url, request, env)) return new Response("forbidden", { status: 403 });
       return new Response(await buildStats(env), {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
@@ -57,6 +63,7 @@ export default {
 
     // 手動で答え合わせを走らせる（Cronを待たずに確認したいとき）
     if (url.pathname === "/settle" && request.method === "POST") {
+      if (!authorized(url, request, env)) return new Response("forbidden", { status: 403 });
       if (!env.DB) return new Response("D1が設定されていません", { status: 500 });
       return Response.json(await settlePredictions(env.DB));
     }
@@ -92,18 +99,33 @@ async function buildStats(env: Env): Promise<string> {
   if (!env.DB) return "D1が設定されていないため成績を記録していません。";
 
   try {
+    // 未確定件数はウィンドウ外も含めて正確に数える
+    const unsettledRow = await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM predictions WHERE settled_at IS NULL",
+    ).first<{ n: number }>();
+
     const { results } = await env.DB.prepare(
       `SELECT race_id, hd, jcd, rno, verdict, picks_json, win_probs_json, actual, payout
-         FROM predictions ORDER BY hd DESC LIMIT 1000`,
+         FROM predictions
+        WHERE actual IS NOT NULL
+        ORDER BY hd DESC, predicted_at DESC LIMIT 1000`,
     ).all<PredictionRow>();
 
-    const rows = results ?? [];
-    const unsettled = rows.filter((r) => !r.actual).length;
-    return formatSummary(summarize(rows), unsettled);
+    return formatSummary(summarize(results ?? []), unsettledRow?.n ?? 0);
   } catch (e) {
     console.error(e);
     return "成績の集計に失敗しました。";
   }
+}
+
+/**
+ * ADMIN_KEY が設定されていれば照合する。
+ * /stats は個人の成績、/settle はD1書き込みを伴うため、公開URLのままにしない。
+ */
+function authorized(url: URL, request: Request, env: Env): boolean {
+  if (!env.ADMIN_KEY) return true; // 未設定なら開放（個人用の既定）
+  const key = url.searchParams.get("key") ?? request.headers.get("x-admin-key");
+  return key === env.ADMIN_KEY;
 }
 
 // ---------------------------------------------------------------- Webhook
@@ -117,8 +139,16 @@ async function handleWebhook(request: Request, env: Env, ctx: ExecutionContext) 
   );
   if (!ok) return new Response("invalid signature", { status: 401 });
 
-  const payload = JSON.parse(body) as { events?: LineEvent[] };
-  const events = payload.events ?? [];
+  let events: LineEvent[] = [];
+  try {
+    const payload = JSON.parse(body) as { events?: LineEvent[] };
+    events = payload.events ?? [];
+  } catch {
+    // 署名は正しいのにJSONが壊れているのは想定外だが、
+    // 500を返すとLINEが同じボディを再送し続けるため200で受け流す
+    console.error("webhook body is not JSON");
+    return new Response("ok");
+  }
 
   // LINE は10秒以内の200応答を期待するので、処理は waitUntil に逃がす
   ctx.waitUntil(
@@ -205,8 +235,9 @@ async function handleEvent(event: LineEvent, env: Env) {
   const hd = todayJst();
   try {
     const p = await predict(parsed.jcd, parsed.rno, hd);
-    await savePrediction(env, p);
+    // 返信が最優先（replyTokenには期限がある）。記録はその後。
     await reply(replyToken, [predictionFlex(p) as unknown], env.LINE_CHANNEL_ACCESS_TOKEN);
+    await savePrediction(env, p);
   } catch (err) {
     console.error(err);
     const msg =
@@ -218,12 +249,6 @@ async function handleEvent(event: LineEvent, env: Env) {
 }
 
 // ---------------------------------------------------------------- 補助
-
-/** 日本時間の YYYYMMDD */
-function todayJst(): string {
-  const now = new Date(Date.now() + 9 * 3600 * 1000);
-  return now.toISOString().slice(0, 10).replace(/-/g, "");
-}
 
 async function todayStadiums(): Promise<string> {
   const hd = todayJst();
@@ -249,10 +274,20 @@ async function todayStadiums(): Promise<string> {
 async function savePrediction(env: Env, p: Awaited<ReturnType<typeof predict>>) {
   if (!env.DB) return;
   try {
+    // INSERT OR REPLACE は行をDELETE→INSERTするため、答え合わせ済みの
+    // actual / payout / settled_at がNULLに戻ってしまう（レース後に同じ
+    // レースを聞き直すだけで成績データが壊れる）。
+    // 未確定の行だけ予想を上書きし、確定済みの行には触らない。
     await env.DB.prepare(
-      `INSERT OR REPLACE INTO predictions
+      `INSERT INTO predictions
          (race_id, hd, jcd, rno, predicted_at, verdict, picks_json, win_probs_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(race_id) DO UPDATE SET
+         predicted_at   = excluded.predicted_at,
+         verdict        = excluded.verdict,
+         picks_json     = excluded.picks_json,
+         win_probs_json = excluded.win_probs_json
+       WHERE predictions.settled_at IS NULL`,
     )
       .bind(
         `${p.hd}-${String(p.jcd).padStart(2, "0")}-${String(p.rno).padStart(2, "0")}`,
@@ -277,7 +312,7 @@ async function handleDebugPredict(url: URL): Promise<Response> {
   const rno = parseInt(url.searchParams.get("rno") ?? "", 10);
   const hd = url.searchParams.get("hd") ?? todayJst();
 
-  if (!STADIUMS[jcd] || !(rno >= 1 && rno <= 12)) {
+  if (!STADIUMS[jcd] || !(rno >= 1 && rno <= 12) || !/^\d{8}$/.test(hd)) {
     return new Response("usage: /predict?jcd=24&rno=12&hd=20260725", { status: 400 });
   }
 

@@ -58,7 +58,8 @@ export function resolveStadium(text: string): number | null {
   if (ALIASES[t] !== undefined) return ALIASES[t];
 
   for (const [name, jcd] of Object.entries(NAME_TO_JCD)) {
-    if (t.includes(name) || name.includes(t)) return jcd;
+    // 1文字入力の部分一致は誤爆する（「大」→大村、「津田」→津）ので2文字以上に限る
+    if (t.length >= 2 && (t.includes(name) || name.includes(t))) return jcd;
   }
   return null;
 }
@@ -70,7 +71,13 @@ export function resolveStadium(text: string): number | null {
 export function parseCommand(
   raw: string,
 ): { jcd: number; rno: number } | { error: string } {
-  const text = raw.trim().replace(/[Ｒｒ]/g, "R").replace(/R$/i, "").trim();
+  // 全角数字・全角ハイフンを半角へ（「大村１２」のようなIME入力を受ける）
+  const text = raw
+    .trim()
+    .replace(/[０-９]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0))
+    .replace(/[Ｒｒ]/g, "R")
+    .replace(/R$/i, "")
+    .trim();
 
   // 「24 12」のように数字が2つ並ぶ場合
   const twoNums = text.match(/^(\d{1,2})\s*[\s\-/]\s*(\d{1,2})$/);

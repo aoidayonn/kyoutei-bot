@@ -109,26 +109,37 @@ export function buildPicks(
 
   const market = marketProbabilities(odds);
 
-  // 対数線形プーリング
-  const raw: Record<string, number> = {};
+  // オッズが無い組み合わせ（一部だけ取得失敗・売止め等）は候補から外し、
+  // 残った組み合わせの上でモデル・市場の両分布を正規化し直してからブレンドする。
+  //
+  // 以前は「オッズの無い組にはモデル確率を生のまま入れる」実装で、
+  // スケールの違う確率が混ざって合計が1を超え、穴目を過大評価する側に
+  // 壊れていた（モデル生確率は市場より平らなため）。
+  const covered = combos.filter((c) => market[c.combo] !== undefined && c.prob > 0);
+  const mSum = covered.reduce((a, c) => a + market[c.combo], 0);
+  const pSum = covered.reduce((a, c) => a + c.prob, 0);
+  if (mSum <= 0 || pSum <= 0) return [];
+
+  const raw = new Map<string, number>();
   let z = 0;
-  for (const c of combos) {
-    const q = market[c.combo];
-    if (!q || c.prob <= 0) continue;
-    const v = Math.pow(q, 1 - modelWeight) * Math.pow(c.prob, modelWeight);
-    raw[c.combo] = v;
+  for (const c of covered) {
+    const q = market[c.combo] / mSum;
+    const p = c.prob / pSum;
+    const v = Math.pow(q, 1 - modelWeight) * Math.pow(p, modelWeight);
+    raw.set(c.combo, v);
     z += v;
   }
+  if (z <= 0 || !Number.isFinite(z)) return [];
 
-  return combos
+  return covered
     .map((c) => {
-      const prob = z > 0 && raw[c.combo] ? raw[c.combo] / z : c.prob;
+      const prob = raw.get(c.combo)! / z;
       const o = odds[c.combo] ?? null;
       return {
         combo: c.combo,
         prob,
         modelProb: c.prob,
-        marketProb: market[c.combo] ?? null,
+        marketProb: market[c.combo] / mSum,
         odds: o,
         ev: o === null ? null : prob * o,
       };

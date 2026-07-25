@@ -124,3 +124,23 @@ test("オッズが取れていないときはモデル確率のまま返り、�
   // 期待値が計算できない以上、推奨は出さない
   assert.equal(selectPicks(picks).length, 0);
 });
+
+test("オッズが一部欠けていても確率の合計は1になり、欠けた組は候補から外れる", () => {
+  // 実際に起きうる状況: 120通り中10通りだけオッズが取れなかった
+  const partial = { ...odds };
+  const removed = Object.keys(partial).slice(0, 10);
+  for (const k of removed) delete partial[k];
+  assert.equal(Object.keys(partial).length, 110);
+
+  const picks = buildPicks(uniformCombos(), partial);
+  assert.equal(picks.length, 110, "オッズの無い組は候補に含めない");
+
+  const sum = picks.reduce((a, p) => a + p.prob, 0);
+  assert.ok(Math.abs(sum - 1) < 1e-9, `確率の合計が ${sum}`);
+
+  // 以前の実装はオッズの無い組へ「正規化前のモデル生確率」をそのまま入れており、
+  // 穴目を過大評価する形で合計が1を超えていた
+  for (const p of picks) {
+    assert.ok(p.marketProb !== null, `${p.combo} に市場確率がありません`);
+  }
+});

@@ -9,7 +9,7 @@
  */
 
 import model from "./model.json";
-import { buildFeatures, type Priors, type RaceInput } from "./features";
+import { buildFeatures, FEATURE_NAMES, type Priors, type RaceInput } from "./features";
 import {
   scoresFromUtilities,
   trifectaProbabilities,
@@ -27,6 +27,23 @@ const PRIORS: Priors = {
   racer_lane: (model.racer_lane ?? {}) as Record<string, number>,
 };
 const STAGE_EXPONENTS = (model.stage_exponents ?? [1, 1, 1]) as [number, number, number];
+
+// モデルと実装の不整合はここで止める。
+// 特徴量の数や並びがズレていても行列積は例外を出さず「静かに誤った確率」を
+// 返し続けるため、起動時に落として気づけるようにする（死活監視が検知する）。
+{
+  const names = (model.feature_names ?? []) as string[];
+  if (WEIGHTS.length !== FEATURE_NAMES.length) {
+    throw new Error(
+      `model.json の重みが ${WEIGHTS.length} 本、実装の特徴量が ${FEATURE_NAMES.length} 個で一致しません。再学習が必要です`,
+    );
+  }
+  if (names.length !== FEATURE_NAMES.length || names.some((n, i) => n !== FEATURE_NAMES[i])) {
+    throw new Error(
+      "model.json の feature_names が features.ts と一致しません。再学習が必要です",
+    );
+  }
+}
 
 export interface Prediction {
   jcd: number;
@@ -53,8 +70,13 @@ export async function predict(
   rno: number,
   hd: string,
 ): Promise<Prediction> {
-  const race = await fetchRace(jcd, rno, hd);
-  const odds = await fetchOdds(jcd, rno, hd);
+  // LINE の replyToken には有効期限があるため、直列で待たない。
+  // boatrace.jp は1リクエスト5〜10秒かかることがあり、直列だと期限切れで
+  // 返信が丸ごと消える（ユーザーには無反応に見える）。
+  const [race, odds] = await Promise.all([
+    fetchRace(jcd, rno, hd),
+    fetchOdds(jcd, rno, hd),
+  ]);
   const hasOdds = Object.keys(odds).length >= 100;
 
   const input: RaceInput = {

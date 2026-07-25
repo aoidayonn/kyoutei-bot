@@ -52,6 +52,11 @@ const checks = {
     test: (v) => v === "" || /^U[0-9a-f]{32}$/i.test(v),
     hint: "U で始まる33文字です。空でも構いません（その場合は登録をスキップします）",
   },
+  ADMIN_KEY: {
+    required: false,
+    test: (v) => v === "" || v.length >= 8,
+    hint: "8文字以上のランダムな文字列。/stats /settle の保護用（空ならスキップ）",
+  },
 };
 
 let hasError = false;
@@ -104,6 +109,7 @@ function putSecret(name, value) {
 
 const targets = ["LINE_CHANNEL_SECRET", "LINE_CHANNEL_ACCESS_TOKEN"];
 if (vars.get("ALLOWED_USER_ID")) targets.push("ALLOWED_USER_ID");
+if (vars.get("ADMIN_KEY")) targets.push("ADMIN_KEY");
 
 for (const name of targets) {
   const value = vars.get(name);

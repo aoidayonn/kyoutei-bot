@@ -19,6 +19,7 @@ import {
   parseRacelist,
   parseBeforeInfo,
   parseOdds3t,
+  parseDeadline,
 } from "../src/scrape.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -85,4 +86,36 @@ test("3連単オッズを120通りすべて取れる", () => {
     overround > 1.2 && overround < 1.5,
     `Σ(1/オッズ)=${overround.toFixed(3)} が想定外。読み取り順がずれている可能性があります`,
   );
+});
+
+test("締切時刻はレース番号ごとに正しく取れる（以前は常に1Rの時刻を返していた）", () => {
+  const html = fx("racelist.html");
+  // 「電話投票締切予定」行には12レース分の時刻が並ぶ
+  assert.equal(parseDeadline(html, 1), "12:17");
+  assert.equal(parseDeadline(html, 7), "15:23");
+  assert.equal(parseDeadline(html, 12), "18:00");
+});
+
+test("展示タイムは出現順ではなく艇番で割り当てられる", () => {
+  // 3号艇のブロックが読み飛ばされた（セル不足の）HTMLを合成する。
+  // 以前の実装では4〜6号艇のタイムが1つずつ前にずれていた。
+  const mk = (lane, ex) => `<tbody><td>${lane}</td><td>x</td><td>選手</td><td>52.0kg</td><td>${ex}</td><td>0.5</td></tbody>`;
+  const html =
+    mk(1, "6.91") + mk(2, "6.92") +
+    "<tbody><td>3</td></tbody>" +      // 3号艇: セルが足りず読めない
+    mk(4, "6.94") + mk(5, "6.95") + mk(6, "6.96");
+  const info = parseBeforeInfo(html);
+  assert.equal(info.exhibition[0].exTime, 6.91);
+  assert.equal(info.exhibition[2], null);            // 3号艇は欠損
+  assert.equal(info.exhibition[3].exTime, 6.94);     // 4号艇はずれない
+  assert.equal(info.exhibition[5].exTime, 6.96);
+});
+
+test("展示タイムの異常値（0.00等）は欠損として扱われる", () => {
+  const mk = (lane, ex) => `<tbody><td>${lane}</td><td>x</td><td>選手</td><td>52.0kg</td><td>${ex}</td><td>0.5</td></tbody>`;
+  const html = mk(1, "0.00") + mk(2, "6.92") + mk(3, "12.5") + mk(4, "6.94") + mk(5, "6.95") + mk(6, "6.96");
+  const info = parseBeforeInfo(html);
+  assert.equal(info.exhibition[0].exTime, null); // 0.00 は展示タイムとしてありえない
+  assert.equal(info.exhibition[2].exTime, null); // 12.5 も範囲外
+  assert.equal(info.exhibition[1].exTime, 6.92);
 });

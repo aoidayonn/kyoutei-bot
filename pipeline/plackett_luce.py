@@ -49,7 +49,7 @@ def win_probabilities(scores) -> list[float]:
 
 def softmax(utilities) -> list[float]:
     m = max(utilities)
-    exps = [pow(2.718281828459045, u - m) for u in utilities]
+    exps = [math.exp(u - m) for u in utilities]
     t = sum(exps)
     return [e / t for e in exps]
 
@@ -57,4 +57,4 @@ def softmax(utilities) -> list[float]:
 def scores_from_utilities(utilities) -> list[float]:
     """効用 v_i -> スコア s_i = exp(v_i)。数値安定のため最大値を引く。"""
     m = max(utilities)
-    return [pow(2.718281828459045, u - m) for u in utilities]
+    return [math.exp(u - m) for u in utilities]

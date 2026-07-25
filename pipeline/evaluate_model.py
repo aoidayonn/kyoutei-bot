@@ -43,6 +43,15 @@ def main():
         return
 
     model = json.loads(model_path.read_text(encoding="utf-8"))
+
+    # 特徴量の並びがコードと違うモデルは、例外を出さず「静かに誤った確率」を
+    # 返すため、ここで必ず照合する
+    names = model.get("feature_names")
+    if names != T.F.FEATURE_NAMES:
+        raise SystemExit(
+            "model.json の feature_names が features.py と一致しません。再学習してください"
+        )
+
     w = np.array(model["weights"])
     priors = {
         "lane_prior": model.get("lane_prior", {}),

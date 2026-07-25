@@ -51,9 +51,12 @@ def main():
         sys.exit(1)
 
     if old is None:
-        print("比較対象がないため、新しいモデルを採用します。")
-        print(f"  LogLoss {new['logloss']:.4f} / 1着的中率 {new['win_accuracy']:.2%}")
-        sys.exit(0)
+        # 以前は「比較対象がない＝無条件採用」だったが、これは fail-open。
+        # 現行指標が読めない原因はファイル欠損・パース失敗・検証データ不足の
+        # いずれかで、どれも「壊れた状態で自動デプロイしてよい」理由にならない。
+        print("現行モデルの指標を読めませんでした。安全側に倒して採用を見送ります。")
+        print("（初回セットアップ等で意図的に採用したい場合は force を指定）")
+        sys.exit(1)
 
     d_logloss = old["logloss"] - new["logloss"]      # 正なら改善
     d_acc = new["win_accuracy"] - old["win_accuracy"]  # 正なら改善

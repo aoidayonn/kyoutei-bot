@@ -106,7 +106,7 @@ def main():
     p.add_argument("--workers", type=int, default=WORKERS)
     a = p.parse_args()
 
-    hd = a.hd or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y%m%d")
+    hd = a.hd or (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)).strftime("%Y%m%d")
 
     db = Path(a.db)
     db.parent.mkdir(parents=True, exist_ok=True)
@@ -117,19 +117,23 @@ def main():
     if a.jcd:
         targets = [t for t in targets if t[0] == a.jcd]
     if not targets:
+        con.close()
         print("本日は開催がありません")
         return
 
-    now = dt.datetime.utcnow().isoformat()
+    # +00:00 付きで保存する。naive UTC で保存すると、JST の deadline と
+    # 突き合わせて「締切まで何分か」を計算するときに9時間ずれる
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
     rows = []
 
     with ThreadPoolExecutor(max_workers=a.workers) as ex:
         results = ex.map(lambda t: (t, fetch_one(hd, *t)), targets)
         for (jcd, rno), odds in results:
             if odds:
-                rows.append((
-                    f"{hd}-{jcd:02d}-{rno:02d}", now, None, json.dumps(odds),
-                ))
+                # race_id は kyotei.db と同じ YYYY-MM-DD-jj-rr 形式にする。
+                # 以前は YYYYMMDD 形式で、後からレース情報とJOINすると0行になった
+                rid = f"{hd[:4]}-{hd[4:6]}-{hd[6:]}-{jcd:02d}-{rno:02d}"
+                rows.append((rid, now, None, json.dumps(odds)))
 
     # 締切まで何分だったかは、番組表側の deadline と captured_at を突き合わせれば
     # 後から計算できる。ここで余計なリクエストを増やさない。

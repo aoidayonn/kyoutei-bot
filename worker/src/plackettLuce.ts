@@ -15,6 +15,7 @@ export interface Combo {
 /** 効用ベクトル（長さ6）からスコア s_i = exp(v_i) を作る。数値安定のため最大値を引く。 */
 export function scoresFromUtilities(v: number[]): number[] {
   const m = Math.max(...v);
+  if (!Number.isFinite(m)) return v.map(() => 0);
   return v.map((x) => Math.exp(x - m));
 }
 
@@ -38,6 +39,9 @@ export function trifectaProbabilities(
   exponents: [number, number, number] = [1, 1, 1],
 ): Combo[] {
   const m = Math.max(...utilities);
+  // 特徴量やモデルの不整合で NaN が混ざった場合、NaN の確率を返すより
+  // 空を返して「取得失敗」として扱わせる方が安全側。
+  if (!Number.isFinite(m)) return [];
   const [e1, e2, e3] = exponents;
   const s1 = utilities.map((v) => Math.exp(e1 * (v - m)));
   const s2 = utilities.map((v) => Math.exp(e2 * (v - m)));

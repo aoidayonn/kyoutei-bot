@@ -25,3 +25,8 @@ LINE_CHANNEL_ACCESS_TOKEN=your_channel_access_token_here
 #   1. LINEでボットに「whoami」と送る → Uで始まる33文字が返ってくる
 #   2. その値をここに書いて npm run secrets を実行し直す
 ALLOWED_USER_ID=
+
+# 管理用エンドポイント（/stats /settle）の鍵（任意）。
+# 未設定だと成績ページと答え合わせの起動がURLを知る誰からでも叩けます。
+# 適当なランダム文字列を設定し、使うときは ?key=... を付けます。
+ADMIN_KEY=

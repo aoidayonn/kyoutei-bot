@@ -137,6 +137,75 @@ def compute_racer_lane(races, min_races=5, shrink=15.0) -> dict[str, float]:
     return table
 
 
+def annotate_racer_lane_expanding(races, min_races=5, shrink=15.0):
+    """学習用: 各レースの選手×枠エッジを「そのレースより前の結果」だけから計算し、
+    e["racer_lane_edge"] に埋め込む（features.py が優先して使う）。
+
+    compute_racer_lane は学習期間全体の1着実績からテーブルを作るため、
+    そのまま学習の特徴量に使うと「そのレース自身の結果」が説明変数に混ざる
+    （ターゲットエンコーディングのインサンプルリーク）。実測では選手×枠の
+    判別力が約26%水増しされ、重みが過大に学習されていた。
+
+    推論用のテーブル（model.json に載せる方）は従来どおり全期間で作ってよい。
+    推論時点では学習期間ぜんぶが「過去」だから。
+    """
+    win = defaultdict(int)
+    cnt = defaultdict(int)
+    lane_win = defaultdict(int)
+    lane_cnt = defaultdict(int)
+
+    def logit(p):
+        p = min(max(p, 1e-4), 1 - 1e-4)
+        return math.log(p / (1 - p))
+
+    for r in sorted(races, key=lambda x: (x["date"], x["jcd"], x["rno"])):
+        first = int(r["trifecta"].split("-")[0])
+
+        # まず「ここまでの実績」で特徴量を埋める
+        for e in r["entries"]:
+            rid, lane = e.get("racer_id"), e["lane"]
+            n = cnt[(rid, lane)] if rid else 0
+            if rid and n >= min_races and lane_cnt[lane] > 0:
+                b = lane_win[lane] / lane_cnt[lane]
+                p = (win[(rid, lane)] + shrink * b) / (n + shrink)
+                e["racer_lane_edge"] = round(logit(p) - logit(b), 4)
+            else:
+                e["racer_lane_edge"] = 0.0
+
+        # その後にこのレースの結果を実績へ反映する
+        for e in r["entries"]:
+            rid, lane = e.get("racer_id"), e["lane"]
+            lane_cnt[lane] += 1
+            if lane == first:
+                lane_win[lane] += 1
+            if rid:
+                cnt[(rid, lane)] += 1
+                if lane == first:
+                    win[(rid, lane)] += 1
+
+
+def exclude_nonstarter_races(races):
+    """展示タイムの無い艇（=欠場・出走取消）を含むレースを学習から外す。
+
+    Kファイルで展示タイムが空の艇は「そのレースを走らなかった艇」であり、
+    ほぼ確実に勝たない。これを ex_missing 特徴量として学習すると
+    「結果を説明変数にする」完全分離が起き、重みが -5 台まで暴走していた。
+    本番では ex_missing は「直前情報が未公開」という別の意味になるため、
+    学習データから欠場レースごと取り除いて特徴量を無害化する。
+    """
+    kept = [
+        r for r in races
+        if all(
+            e.get("ex_time") is not None and 5.0 <= float(e["ex_time"]) <= 9.0
+            for e in r["entries"]
+        )
+    ]
+    dropped = len(races) - len(kept)
+    if dropped:
+        print(f"  欠場艇を含む {dropped:,} レースを学習から除外（完全分離の防止）")
+    return kept
+
+
 # ------------------------------------------------------------------ 行列化
 
 def build_matrices(races, priors):
@@ -179,9 +248,10 @@ def neg_loglik(w, X, order, l2):
 
         mask[idx, chosen] = False
 
-    ll -= l2 * float(w @ w)
-    grad -= 2 * l2 * w
-    return -ll / N, -grad / N
+    # 正則化はレース数で割らない。以前は ll と一緒に /N されていたため
+    # 実効強度が l2/N（N=15万なら 6e-6）となり、事実上の無正則化だった。
+    # これが完全分離した特徴量の重みを -5 台まで暴走させていた。
+    return -ll / N + l2 * float(w @ w), -grad / N + 2 * l2 * w
 
 
 def fit_stage_exponents(w, X, order, verbose=True):
@@ -266,7 +336,8 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--train-end", required=True, help="学習に使う最終日 YYYY-MM-DD")
     p.add_argument("--train-start", default=None)
-    p.add_argument("--l2", type=float, default=1.0)
+    p.add_argument("--l2", type=float, default=0.0001,
+                   help="L2正則化。平均対数尤度に対する係数（データ量に依存しない尺度）")
     p.add_argument("--db", default=str(DB))
     p.add_argument("--out", default=str(Path(__file__).resolve().parent.parent
                                         / "worker" / "src" / "model.json"))
@@ -281,8 +352,13 @@ def main():
     if len(train) < 500:
         raise SystemExit("学習データが少なすぎます。download.py と build_db.py を先に実行してください。")
 
+    train = exclude_nonstarter_races(train)
+
     lane_prior = compute_lane_prior(train)
+    # 推論用テーブルは全学習期間から（推論時には全部が過去）
     racer_lane = compute_racer_lane(train)
+    # 学習用の特徴量は各レースより前の実績のみから（リーク防止）
+    annotate_racer_lane_expanding(train)
     priors = {"lane_prior": lane_prior, "racer_lane": racer_lane}
     print(f"選手×枠テーブル: {len(racer_lane)} 件")
 

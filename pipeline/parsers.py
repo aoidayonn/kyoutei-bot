@@ -30,7 +30,7 @@ K(競走成績) 着順行のバイト割り付け:
     [34:37] ボート番号
     [39:43] 展示タイム
     [46:47] 進入コース
-    [50:55] スタートタイミング  "0.09" / "F.01" / "L.05"
+    [50:55] スタートタイミング  " 0.09" / "F0.01" / "L0.05"（F/Lはゼロ入り5バイト）
     [59:66] レースタイム
 """
 from __future__ import annotations
@@ -72,9 +72,14 @@ def _f(raw: str):
 
 def _i(raw: str):
     s = raw.strip()
-    if not s or not s.lstrip("-").isdigit():
+    if not s:
         return None
-    return int(s)
+    try:
+        return int(s)
+    except ValueError:
+        # "--5" のような値は lstrip+isdigit の判定をすり抜けて int() で落ち、
+        # 上位の except がエントリを丸ごと捨てていた。欠損として扱う
+        return None
 
 
 def _cut(bs: bytes, start: int, end: int) -> str:

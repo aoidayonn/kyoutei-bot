@@ -101,3 +101,20 @@ test("model.json に必要なキーが揃っている", () => {
     "検証データで「1号艇固定」に勝てていません",
   );
 });
+
+// --- コマンド解釈 ---
+
+test("全角数字・全角Rの入力を受け付ける", async () => {
+  const { parseCommand } = await import("../src/stadiums.ts");
+  assert.deepEqual(parseCommand("大村１２"), { jcd: 24, rno: 12 });
+  assert.deepEqual(parseCommand("住之江５Ｒ"), { jcd: 12, rno: 5 });
+  assert.deepEqual(parseCommand("２４ １２"), { jcd: 24, rno: 12 });
+});
+
+test("1文字の曖昧な場名は誤爆せずエラーになる", async () => {
+  const { resolveStadium } = await import("../src/stadiums.ts");
+  // 「大」は大村にも多摩川にも取れるので解決しない（以前は大村を返していた）
+  assert.equal(resolveStadium("大"), null);
+  // 正式名称の1文字場「津」は正確に引ける
+  assert.equal(resolveStadium("津"), 9);
+});

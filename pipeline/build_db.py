@@ -156,17 +156,28 @@ def parse_day(day: dt.date):
 
 # ---------------------------------------------------------------- 書き込み（直列側）
 
-RACE_SQL = """INSERT OR REPLACE INTO races
-    (race_id,date,jcd,rno,title,distance,deadline,weather,wind_dir,
-     wind_speed,wave_height,trifecta,trifecta_payout,trifecta_pop)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+# INSERT OR REPLACE は行をDELETE→INSERTするため、片方のファイル（BまたはK）だけで
+# 再取り込みすると、もう片方由来のカラムがNULLで上書きされてしまう。
+# COALESCE付きUPSERTで「新しい値がNULLなら既存値を残す」ようにする。
+_RACE_COLS = ["race_id", "date", "jcd", "rno", "title", "distance", "deadline",
+              "weather", "wind_dir", "wind_speed", "wave_height",
+              "trifecta", "trifecta_payout", "trifecta_pop"]
+RACE_SQL = (
+    f"INSERT INTO races ({','.join(_RACE_COLS)}) VALUES ({','.join('?' * len(_RACE_COLS))}) "
+    "ON CONFLICT(race_id) DO UPDATE SET "
+    + ",".join(f"{c}=COALESCE(excluded.{c},{c})" for c in _RACE_COLS if c != "race_id")
+)
 
-ENTRY_SQL = """INSERT OR REPLACE INTO entries
-    (race_id,lane,racer_id,racer_name,age,branch,weight,racer_class,
-     win_rate_national,top2_national,win_rate_local,top2_local,
-     motor_no,motor_top2,boat_no,boat_top2,
-     rank,course,exhibition_time,start_timing,is_flying)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"""
+_ENTRY_COLS = ["race_id", "lane", "racer_id", "racer_name", "age", "branch", "weight",
+               "racer_class", "win_rate_national", "top2_national", "win_rate_local",
+               "top2_local", "motor_no", "motor_top2", "boat_no", "boat_top2",
+               "rank", "course", "exhibition_time", "start_timing", "is_flying"]
+ENTRY_SQL = (
+    f"INSERT INTO entries ({','.join(_ENTRY_COLS)}) VALUES ({','.join('?' * len(_ENTRY_COLS))}) "
+    "ON CONFLICT(race_id,lane) DO UPDATE SET "
+    + ",".join(f"{c}=COALESCE(excluded.{c},{c})" for c in _ENTRY_COLS
+               if c not in ("race_id", "lane"))
+)
 
 
 def main():

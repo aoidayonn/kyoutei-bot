@@ -66,6 +66,19 @@ DEFAULTS = {
 }
 
 
+# 当地未走などで 0.00 が入る項目。欠損として扱う。
+# top2 系を外していた頃は、当地未走の選手（全体の約1割）に
+# 「当地勝率=平均5.5、当地2連率=0%」という矛盾した組が渡っていた。
+ZERO_IS_MISSING = (
+    "win_rate_national", "top2_national",
+    "win_rate_local", "top2_local",
+    "motor_top2", "boat_top2",
+)
+
+# FEATURE_NAMES -> 添字。以前はレース×艇ごとに辞書を作り直していた（100万回）
+_IDX = {n: i for i, n in enumerate(FEATURE_NAMES)}
+
+
 def _num(v, key):
     if v is None:
         return DEFAULTS[key], True
@@ -73,8 +86,7 @@ def _num(v, key):
         f = float(v)
     except (TypeError, ValueError):
         return DEFAULTS[key], True
-    if f == 0.0 and key in ("win_rate_national", "win_rate_local", "motor_top2", "boat_top2"):
-        # 当地未走などで 0.00 が入る。欠損として扱う
+    if f == 0.0 and key in ZERO_IS_MISSING:
         return DEFAULTS[key], True
     return f, False
 
@@ -103,6 +115,10 @@ def build_features(race: dict, priors) -> list[list[float]]:
     ex_vals = []
     for e in race["entries"]:
         v, miss = _num(e.get("ex_time"), "ex_time")
+        # 妥当範囲外（0.00 や列ずれの混入）は欠損扱い。
+        # 異常値を1つ通すと ex_mean ごと歪んでレース全体の確率が崩壊する
+        if not miss and not (5.0 <= v <= 9.0):
+            miss = True
         ex_vals.append(None if miss else v)
     present = [v for v in ex_vals if v is not None]
     ex_mean = sum(present) / len(present) if present else DEFAULTS["ex_time"]
@@ -111,12 +127,19 @@ def build_features(race: dict, priors) -> list[list[float]]:
     for e, exv in zip(race["entries"], ex_vals):
         lane = int(e["lane"])
         row = [0.0] * N_FEATURES
-        idx = {n: i for i, n in enumerate(FEATURE_NAMES)}
+        idx = _IDX
 
         row[idx[f"lane_{lane}"]] = 1.0
         row[idx["lane_prior"]] = lane_prior.get(f"{jcd}-{lane}", 0.0)
         rid = e.get("racer_id")
-        row[idx["racer_lane_edge"]] = racer_lane.get(f"{rid}-{lane}", 0.0) if rid else 0.0
+        # 学習時は train.py が「そのレースより前の実績だけ」から計算した値を
+        # e["racer_lane_edge"] に埋め込む（インサンプルリーク防止）。
+        # 推論時は override が無いので model.json のテーブルを引く。
+        override = e.get("racer_lane_edge")
+        if override is not None:
+            row[idx["racer_lane_edge"]] = override
+        else:
+            row[idx["racer_lane_edge"]] = racer_lane.get(f"{rid}-{lane}", 0.0) if rid else 0.0
 
         for key in ("win_rate_national", "top2_national", "win_rate_local",
                     "top2_local", "motor_top2", "boat_top2", "age", "weight"):
@@ -133,8 +156,9 @@ def build_features(race: dict, priors) -> list[list[float]]:
             row[idx["ex_time"]] = 0.0
             row[idx["ex_missing"]] = 1.0
         else:
-            # 展示が平均より速い(小さい)ほど正の値。0.1秒差 = 1.0 のスケール
-            ex_rel = (ex_mean - exv) * 10.0
+            # 展示が平均より速い(小さい)ほど正の値。0.1秒差 = 1.0 のスケール。
+            # ±0.3秒相当でクリップし、異常値がレースを支配しないようにする
+            ex_rel = max(-3.0, min(3.0, (ex_mean - exv) * 10.0))
             row[idx["ex_time"]] = ex_rel
 
         row[idx[f"wind_x_lane{lane}"]] = wind / 10.0

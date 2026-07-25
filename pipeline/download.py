@@ -185,15 +185,16 @@ def parse_date(text: str, label: str) -> dt.date:
     m = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", (text or "").strip())
     if m:
         year, month, day = (int(x) for x in m.groups())
-        if 1 <= month <= 12:
-            last = calendar.monthrange(year, month)[1]
-            if day > last:
-                raise SystemExit(
-                    f"{label} の日付 {text} は存在しません。"
-                    f"{year}年{month}月は{last}日までです（{year}-{month:02d}-{last} では？）"
-                )
-        else:
+        if not (1 <= month <= 12):
             raise SystemExit(f"{label} の月が不正です: {text}")
+        last = calendar.monthrange(year, month)[1]
+        if day > last:
+            raise SystemExit(
+                f"{label} の日付 {text} は存在しません。"
+                f"{year}年{month}月は{last}日までです（{year}-{month:02d}-{last} では？）"
+            )
+        # 形式は合っているのに fromisoformat が弾いた = 0埋めされていない
+        return dt.date(year, month, day)
 
     raise SystemExit(f"{label} は YYYY-MM-DD 形式で指定してください（受け取った値: {text}）")
 
@@ -206,7 +207,7 @@ def main():
     )
     p.add_argument("--start", required=True, help="YYYY-MM-DD")
     p.add_argument("--end", help="YYYY-MM-DD（省略時は start と同じ）")
-    p.add_argument("--kinds", default="BK", help="B / K / BK")
+    p.add_argument("--kinds", default="BK", choices=["B", "K", "BK"], help="B / K / BK")
     p.add_argument("--workers", type=int, default=8,
                    help=f"並列数（既定8、上限{MAX_WORKERS}）")
     p.add_argument("--retries", type=int, default=3, help="失敗時の再試行回数")

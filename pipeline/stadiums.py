@@ -52,9 +52,10 @@ def resolve(text: str):
         return NAME_TO_JCD[t]
     if t in ALIASES:
         return ALIASES[t]
-    # 部分一致（「大村」で「大村」など既に上でヒットするが、揺れ対策）
+    # 部分一致（揺れ対策）。1文字入力は誤爆する（「大」→大村、「津田」→津）ので
+    # 2文字以上に限る
     for name, jcd in NAME_TO_JCD.items():
-        if name in t or t in name:
+        if len(t) >= 2 and (name in t or t in name):
             return jcd
     return None
 

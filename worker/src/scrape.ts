@@ -72,10 +72,16 @@ function cells(tbody: string): string[] {
   return [...tbody.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((m) => m[1]);
 }
 
-async function get(url: string): Promise<string> {
+async function get(url: string, ttl = 60): Promise<string> {
   const res = await fetch(url, {
     headers: { "User-Agent": UA, "Accept-Language": "ja" },
-    cf: { cacheTtl: 60, cacheEverything: true },
+    // cacheTtl はエラーページまで60秒キャッシュしてしまう
+    // （未公開の出走表を見たユーザーが送り直しても60秒間同じ失敗が返る）ので、
+    // 成功レスポンスだけキャッシュする。
+    cf: {
+      cacheEverything: true,
+      cacheTtlByStatus: { "200-299": ttl, "300-399": 0, "400-599": 0 },
+    },
   } as RequestInit);
   if (!res.ok) throw new Error(`${url} -> ${res.status}`);
   return await res.text();
@@ -149,18 +155,27 @@ export function parseRacelist(html: string): Partial<ScrapedEntry>[] {
  * 気象は weather1 ブロックのテキストから拾う。
  */
 export function parseBeforeInfo(html: string) {
-  const exhibition: { exTime: number | null; tilt: number | null }[] = [];
+  // 艇番で格納する。以前は出現順に push していたため、1艇でも読み飛ばすと
+  // 以降の艇の展示タイムが全部1つずれるバグがあった（ページ末尾には
+  // 艇番に見える値を持つゴミtbodyも存在する）。
+  const exhibition: ({ exTime: number | null; tilt: number | null } | null)[] = [
+    null, null, null, null, null, null,
+  ];
 
   for (const tb of tbodies(html)) {
     const c = cells(tb);
     if (c.length < 6) continue;
     const lane = toNum(stripTags(c[0]));
-    if (lane === null || lane < 1 || lane > 6) continue;
-    exhibition.push({
-      exTime: toNum(stripTags(c[4])),
+    if (lane === null || !Number.isInteger(lane) || lane < 1 || lane > 6) continue;
+    if (exhibition[lane - 1] !== null) continue; // 同じ艇番の再出現はゴミ行
+
+    const ex = toNum(stripTags(c[4]));
+    exhibition[lane - 1] = {
+      // 展示タイムの妥当範囲は6秒台。列ずれでチルト値(-0.5〜3.0)等を
+      // 拾ってしまうと確率計算が暴走するため、範囲外は欠損扱いにする。
+      exTime: ex !== null && ex >= 5.0 && ex <= 9.0 ? ex : null,
       tilt: toNum(stripTags(c[5])),
-    });
-    if (exhibition.length === 6) break;
+    };
   }
 
   const wi = html.indexOf("weather1");
@@ -216,11 +231,15 @@ export function parseOdds3t(html: string): Record<string, number> {
 // ---------------------------------------------------------------- 締切時刻
 
 export function parseDeadline(html: string, rno: number): string | null {
-  // 出走表ページ上部のレースタブに締切時刻が入っている
-  const m = html.match(/締切予定[^0-9]*(\d{1,2}:\d{2})/);
-  if (m) return m[1];
-  const tab = html.match(new RegExp(`${rno}R[\\s\\S]{0,200}?(\\d{1,2}:\\d{2})`));
-  return tab ? tab[1] : null;
+  // 出走表ページ上部の「電話投票締切予定」行には12レース分の時刻が並ぶ。
+  // 以前は最初にマッチした時刻を返していたため、何Rを聞いても常に
+  // 1Rの締切が表示されていた（締切済みのレースを買いに行きかねない）。
+  const i = html.indexOf("締切予定");
+  if (i < 0) return null;
+  const end = html.indexOf("</tr>", i);
+  const seg = html.slice(i, end > i ? end : i + 3000);
+  const times = [...seg.matchAll(/(\d{1,2}:\d{2})/g)].map((m) => m[1]);
+  return times.length >= rno ? times[rno - 1] : null;
 }
 
 // ---------------------------------------------------------------- 公開API
@@ -237,17 +256,23 @@ export async function fetchRace(
 
   const base = parseRacelist(racelistHtml);
   if (base.length < 6) {
-    throw new Error("出走表を取得できませんでした（開催がないか、まだ公開されていません）");
+    throw new Error(
+      "出走表を取得できませんでした（開催なし・未公開・欠場で6艇そろっていない、のいずれか）",
+    );
   }
 
   const before = beforeHtml ? parseBeforeInfo(beforeHtml) : null;
-  const hasBeforeInfo = !!before && before.exhibition.some((e) => e.exTime !== null);
+  // 全艇そろったときだけ展示タイムを使う（全か無か）。
+  // 一部の艇だけ欠損した状態でモデルに渡すと、学習データの欠損が
+  // 「不出走」を意味していたせいで、その艇の確率が実力と無関係に潰れる。
+  const hasBeforeInfo =
+    !!before && before.exhibition.every((e) => e !== null && e.exTime !== null);
 
   const entries: ScrapedEntry[] = base.map((e, i) => ({
     ...(e as ScrapedEntry),
     lane: i + 1,
-    exTime: hasBeforeInfo ? before!.exhibition[i]?.exTime ?? null : null,
-    tilt: hasBeforeInfo ? before!.exhibition[i]?.tilt ?? null : null,
+    exTime: hasBeforeInfo ? before!.exhibition[i]!.exTime : null,
+    tilt: before?.exhibition[i]?.tilt ?? null,
   }));
 
   return {
@@ -271,7 +296,8 @@ export async function fetchOdds(
   hd: string,
 ): Promise<Record<string, number>> {
   try {
-    const html = await get(`${BASE}/odds3t${q(jcd, rno, hd)}`);
+    // オッズは締切直前まで動くのでキャッシュは短めにする
+    const html = await get(`${BASE}/odds3t${q(jcd, rno, hd)}`, 15);
     return parseOdds3t(html);
   } catch {
     return {};

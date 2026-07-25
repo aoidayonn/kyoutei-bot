@@ -44,9 +44,13 @@ const DEFAULTS: Record<string, number> = {
   ex_time: 6.85,
 };
 
-// 当地未走などで 0.00 が入る項目は欠損扱いする
+// 当地未走などで 0.00 が入る項目は欠損扱いする。
+// top2 系を外していた頃は、当地未走の選手（全体の約1割）に
+// 「当地勝率=平均5.5、当地2連率=0%」という矛盾した組が渡っていた。
 const ZERO_IS_MISSING = new Set([
-  "win_rate_national", "win_rate_local", "motor_top2", "boat_top2",
+  "win_rate_national", "top2_national",
+  "win_rate_local", "top2_local",
+  "motor_top2", "boat_top2",
 ]);
 
 export interface Priors {
@@ -94,7 +98,10 @@ export function buildFeatures(race: RaceInput, priors: Priors): number[][] {
   // 展示タイムはレース内平均を基準に相対化する
   const exVals: (number | null)[] = race.entries.map((e) => {
     const [v, miss] = num(e.exTime, "ex_time");
-    return miss ? null : v;
+    if (miss) return null;
+    // 展示タイムの妥当範囲外（0.00 やチルト値の混入など）は欠損として扱う。
+    // 異常値を1つ通すと ex_mean ごと歪んでレース全体の確率が崩壊する。
+    return v >= 5.0 && v <= 9.0 ? v : null;
   });
   const present = exVals.filter((v): v is number => v !== null);
   const exMean = present.length
@@ -135,8 +142,9 @@ export function buildFeatures(race: RaceInput, priors: Priors): number[][] {
       row[IDX["ex_time"]] = 0;
       row[IDX["ex_missing"]] = 1;
     } else {
-      // 展示が平均より速い（値が小さい）ほど正
-      exRel = (exMean - ex) * 10;
+      // 展示が平均より速い（値が小さい）ほど正。±0.3秒相当でクリップし、
+      // 万一の異常値がレース全体を支配しないようにする
+      exRel = Math.max(-3, Math.min(3, (exMean - ex) * 10));
       row[IDX["ex_time"]] = exRel;
     }
 

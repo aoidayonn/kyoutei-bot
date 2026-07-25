@@ -52,6 +52,11 @@ LogLoss を主指標にしているのは、3連単の期待値計算が確率�
 | `LINE_CHANNEL_ACCESS_TOKEN` | 異常・結果の通知 | `.dev.vars` と同じ値 |
 | `LINE_USER_ID` | 同上 | LINEでボットに「whoami」と送ると分かる |
 
+任意（推奨）: Cloudflare 側にも `ADMIN_KEY` を登録すると、
+成績ページ（/stats）と答え合わせの起動（/settle）が鍵なしで叩けなくなります。
+`.dev.vars` に8文字以上のランダム文字列を書いて `npm run secrets` を実行し、
+以後は `/stats?key=<その値>` の形で使います。
+
 ### Settings → Secrets and variables → Actions → Variables
 
 | 名前 | 値 |

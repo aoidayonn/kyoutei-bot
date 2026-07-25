@@ -11,6 +11,9 @@ export async function verifySignature(
   channelSecret: string,
 ): Promise<boolean> {
   if (!signature) return false;
+  // シークレット未設定だと TextEncoder が空文字を鍵にしたHMACとして
+  // 「検証が通ってしまう」形で表面化しない。明示的に弾く。
+  if (!channelSecret) return false;
 
   const key = await crypto.subtle.importKey(
     "raw",
@@ -129,11 +132,11 @@ export function predictionFlex(p: Prediction) {
 
   // 期待値トップ
   if (p.byEv.length > 0) {
-    contents.push(sectionTitle("期待値トップ", COLORS.good));
+    contents.push(sectionTitle("推奨買い目（期待値1.05超・確率順）", COLORS.good));
     contents.push(header("ev"));
     p.byEv.forEach((x) => contents.push(pickRow(x, true)));
   } else {
-    contents.push(sectionTitle("期待値トップ", COLORS.good));
+    contents.push(sectionTitle("推奨買い目（期待値1.05超・確率順）", COLORS.good));
     contents.push({
       type: "text",
       text: p.hasOdds
@@ -221,7 +224,7 @@ export function predictionText(p: Prediction): string {
   if (!p.hasBeforeInfo) lines.push("（直前情報が未公開のため暫定予想）");
   lines.push("");
 
-  lines.push("【期待値トップ】");
+  lines.push("【推奨買い目（期待値1.05超・確率順）】");
   if (p.byEv.length) {
     p.byEv.forEach((x, i) =>
       lines.push(

@@ -37,8 +37,21 @@ def predict_race(race, weights, priors, exponents):
     return trifecta_probabilities(v.tolist(), exponents)
 
 
-def run(model_path, start, end, n_points, ev_threshold, db=DB):
+def run(model_path, start, end, n_points, db=DB):
     model = json.loads(Path(model_path).read_text(encoding="utf-8"))
+
+    names = model.get("feature_names")
+    if names != F.FEATURE_NAMES:
+        raise SystemExit(
+            "model.json の feature_names が features.py と一致しません。再学習してください"
+        )
+
+    # 学習期間と検証期間が重なっているとインサンプル評価になり数字が甘く出る
+    tp = model.get("train_period")
+    if tp and start and str(start) <= str(tp[1]):
+        print(f"⚠️  検証開始日 {start} が学習期間（〜{tp[1]}）と重なっています。"
+              f"この数字は楽観的に偏ります。\n")
+
     w = np.array(model["weights"])
     priors = {"lane_prior": model["lane_prior"],
               "racer_lane": model.get("racer_lane", {})}
@@ -114,7 +127,7 @@ def run(model_path, start, end, n_points, ev_threshold, db=DB):
     print("  最有力の内訳: " + ", ".join(f"{c}({v})" for c, v in top5))
 
     print("\n── 購入戦略 ─────────────────────────────")
-    for key, label in (("A", f"確率上位{n_points}点を全部買う"),
+    for key, label in (("A", f"モデル素の確率上位{n_points}点（市場ブレンドなし）"),
                        ("B", "うちモデルが市場より強気な買い目のみ（悲観側の下限）")):
         s = stats[key]
         if s["bet"] == 0:
@@ -126,6 +139,8 @@ def run(model_path, start, end, n_points, ev_threshold, db=DB):
         print(f"       レース的中率 {hit_rate:.2%}  ({s['hit']}/{s['races']})")
 
     print("\n※ 控除率25%のため、無作為に買うと回収率は約75%に収束します。")
+    print("※ この数字は本番の買い方（市場オッズとのブレンド+期待値フィルタ）とは別物です。")
+    print("  本番戦略の回収率は、snapshot_odds.py で貯めたオッズがないと計算できません。")
     print("※ 戦略Bは「外れた買い目は全部買い、当たった買い目だけ条件で除外する」という")
     print("  作りなので、真の回収率の**下限**です。実力はAとBの間のどこかにあります。")
     print("  正確に測るには締切前のオッズが全120通り必要なので、")
@@ -139,10 +154,9 @@ def main():
     p.add_argument("--start", required=True)
     p.add_argument("--end", default=None)
     p.add_argument("--points", type=int, default=5)
-    p.add_argument("--ev", type=float, default=1.0)
     p.add_argument("--db", default=str(DB))
     a = p.parse_args()
-    run(a.model, a.start, a.end, a.points, a.ev, a.db)
+    run(a.model, a.start, a.end, a.points, a.db)
 
 
 if __name__ == "__main__":
