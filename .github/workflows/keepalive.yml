@@ -1,0 +1,49 @@
+name: スケジュール維持
+
+# GitHub は60日間リポジトリに動きがないと、スケジュール実行を自動で無効化する。
+# 止まると連鎖して壊れる:
+#   日次更新が止まる → 7日後にDBのキャッシュが失効 → 週次学習が失敗 → オッズも伸びない
+#
+# それを防ぐため、毎月1日にタイムスタンプだけ更新してコミットする。
+#
+# 注意: これは「コミットがあればリポジトリは活動中とみなされる」という
+# GitHubの挙動に依存している。確実ではないので、無効化の警告メールが届いたら
+# Actions タブから手動で再有効化すること（メールは無効化の前に届く）。
+
+on:
+  schedule:
+    # 毎月1日 JST 9:00（UTC 0:00）
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: タイムスタンプを更新してコミット
+        run: |
+          mkdir -p .github
+          {
+            echo "# スケジュール維持用のファイル"
+            echo ""
+            echo "GitHubの60日ルールでワークフローが無効化されないよう、"
+            echo "毎月1日に自動更新しています。手で編集する必要はありません。"
+            echo ""
+            echo "最終更新: $(date -u -d '+9 hours' '+%Y-%m-%d %H:%M') JST"
+          } > .github/last-activity.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/last-activity.md
+
+          if git diff --cached --quiet; then
+            echo "変更なし"
+          else
+            git commit -m "chore: スケジュール維持のためのタイムスタンプ更新"
+            git push
+          fi

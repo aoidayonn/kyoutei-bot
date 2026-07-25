@@ -1,0 +1,137 @@
+name: 死活監視
+
+# boatrace.jp のマークアップが変わるとスクレイパーが壊れるが、
+# 保存済みHTMLを使う npm test では検知できない（テストは通り続ける）。
+#
+# そこで毎日、実際に動いているボットへリクエストを投げて
+# まともな予想が返ってくるかを確認する。
+# 壊れていたらLINEに通知する（直すのは人間の仕事）。
+
+on:
+  schedule:
+    # JST 12:30（UTC 3:30）。この時間なら1Rの出走表は公開済み。
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install requests
+
+      - name: 本番のボットに問い合わせて応答を検証
+        id: probe
+        env:
+          WORKER_URL: ${{ vars.WORKER_URL }}
+        run: |
+          python - <<'EOF'
+          import json
+          import os
+          import sys
+          import datetime as dt
+          import requests
+
+          base = os.environ.get("WORKER_URL", "").rstrip("/")
+          if not base:
+              print("::warning::リポジトリ変数 WORKER_URL が未設定のためスキップします")
+              print("Settings > Secrets and variables > Actions > Variables で")
+              print("  WORKER_URL = https://kyoutei-bot.<subdomain>.workers.dev")
+              sys.exit(0)
+
+          hd = (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y%m%d")
+
+          # 本日開催中の場を探して、最初に見つかったレースで検証する
+          index = requests.get(
+              f"https://www.boatrace.jp/owpc/pc/race/index?hd={hd}",
+              headers={"User-Agent": "kyoutei-bot-canary/1.0"}, timeout=30,
+          ).text
+          import re
+          jcds = sorted({int(m) for m in re.findall(r"jcd=(\d{2})", index)})
+          jcds = [j for j in jcds if 1 <= j <= 24]
+          if not jcds:
+              print("本日は開催がないためスキップします")
+              sys.exit(0)
+
+          problems = []
+          checked = 0
+
+          for jcd in jcds[:3]:
+              url = f"{base}/predict?jcd={jcd}&rno=1&hd={hd}&format=json"
+              try:
+                  res = requests.get(url, timeout=60)
+              except requests.RequestException as e:
+                  problems.append(f"jcd={jcd}: 接続できません ({e})")
+                  continue
+
+              if res.status_code != 200:
+                  problems.append(f"jcd={jcd}: HTTP {res.status_code}")
+                  continue
+
+              try:
+                  data = res.json()
+              except json.JSONDecodeError:
+                  problems.append(f"jcd={jcd}: JSONとして読めません")
+                  continue
+
+              checked += 1
+
+              # 出走表が読めているか
+              entries = data.get("race", {}).get("entries", [])
+              if len(entries) != 6:
+                  problems.append(f"jcd={jcd}: 出走表が{len(entries)}艇しか取れていません")
+                  continue
+
+              if not all(e.get("winRateNational") for e in entries):
+                  problems.append(f"jcd={jcd}: 勝率が取れていない艇があります")
+
+              # 確率が正常か
+              probs = data.get("winProbs", [])
+              if len(probs) != 6 or abs(sum(probs) - 1) > 1e-6:
+                  problems.append(f"jcd={jcd}: 1着確率の合計が1になっていません")
+              elif not (0.15 < probs[0] < 0.9):
+                  problems.append(
+                      f"jcd={jcd}: 1号艇の1着確率が {probs[0]:.1%} で不自然です"
+                  )
+
+              # オッズが取れているか（取れないと期待値判定ができない）
+              if not data.get("hasOdds"):
+                  problems.append(f"jcd={jcd}: オッズを取得できていません")
+
+          if checked == 0:
+              problems.append("1件も検証できませんでした")
+
+          if problems:
+              print("::error::" + " / ".join(problems))
+              with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                  f.write("problems<<END\n" + "\n".join(problems) + "\nEND\n")
+              sys.exit(1)
+
+          print(f"正常: {checked} レースを検証しました")
+          EOF
+
+      - name: 異常をLINEに通知
+        if: failure()
+        working-directory: pipeline
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+        run: |
+          pip install requests -q
+          python notify_line.py "⚠️ ボットの死活監視で異常を検知しました
+
+          ${{ steps.probe.outputs.problems }}
+
+          boatrace.jp のページ構造が変わった可能性があります。
+          MAINTENANCE.md の「スクレイパーが動かなくなった」を参照してください。
+
+          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

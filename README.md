@@ -160,8 +160,10 @@ kyoutei-bot/
 │
 ├── .github/workflows/
 │   ├── daily-data.yml     毎朝、前日の結果を取り込む
-│   ├── weekly-train.yml   毎週、再学習してPRを作る
-│   └── snapshot-odds.yml  30分おきにオッズを保存
+│   ├── weekly-train.yml   毎週、再学習して改善していれば自動デプロイ
+│   ├── snapshot-odds.yml  30分おきにオッズを保存
+│   ├── canary.yml         毎日、本番が正常か検証してLINEに通知
+│   └── keepalive.yml      毎月、スケジュール無効化を防ぐ
 │
 └── data/                  ダウンロードしたデータ（gitignore対象）
 ```
@@ -322,8 +324,14 @@ LINE で「大村 12」と送って返ってくれば完成です。
 
 ## 運用と改善
 
-定期メンテナンスの一覧は [MAINTENANCE.md](MAINTENANCE.md) にまとめてあります。
-**60日間コミットがないと GitHub がスケジュール実行を止める**ので、そこだけ注意してください。
+**普段やることはありません。** LINEで予想を聞くだけです。
+
+再学習は検証データの指標で自動判定し、改善しているときだけデプロイします。
+本番の死活監視も毎日走り、異常があればLINEに通知が飛びます。
+
+初回だけ必要な設定（Cloudflare APIトークン等）と、
+唯一自動化できない「スクレイパーの修復」については
+[MAINTENANCE.md](MAINTENANCE.md) を参照してください。
 
 予想を出すたびに D1 の `predictions` テーブルへ記録され、
 Cron Trigger（JST 23:30 / 翌 5:00）が実際の結果と払戻金を書き戻します。

@@ -1,12 +1,22 @@
 name: 週次モデル再学習
 
-# 溜まったデータでモデルを学習し直し、worker/src/model.json を更新してPRを作る。
-# 自動マージはしない。バックテストの数字を人間が見てから取り込む。
+# 溜まったデータでモデルを学習し直し、**改善していれば自動でデプロイする**。
 #
-# 事前に必要な設定（一度だけ）:
+# 「人間がPRを見て判断する」を機械的な基準に置き換えている:
+#   - 検証データ（学習に使っていない期間）のLogLossが改善していること
+#   - 1着的中率が大きく落ちていないこと
+#   - 1号艇を買い続けるより良いこと
+# 満たさなければ何もせず、現行モデルのまま動き続ける。
+#
+# 事前に必要な設定:
+#   Settings > Secrets and variables > Actions
+#     Secrets:
+#       CLOUDFLARE_API_TOKEN       Workers デプロイ用（未設定ならデプロイのみスキップ）
+#       CLOUDFLARE_ACCOUNT_ID      同上
+#       LINE_CHANNEL_ACCESS_TOKEN  結果通知用（任意）
+#       LINE_USER_ID               同上
 #   Settings > Actions > General > Workflow permissions
-#     - "Read and write permissions" を選択
-#     - "Allow GitHub Actions to create and approve pull requests" にチェック
+#     "Read and write permissions" を選択
 
 on:
   schedule:
@@ -17,10 +27,17 @@ on:
       train_end:
         description: "学習に使う最終日 YYYY-MM-DD（省略時は3か月前）"
         required: false
+      force:
+        description: "改善していなくても採用する"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
-  pull-requests: write
+
+concurrency:
+  group: weekly-train
+  cancel-in-progress: false
 
 jobs:
   train:
@@ -36,18 +53,14 @@ jobs:
 
       - run: pip install -r pipeline/requirements.txt
 
-      # daily-data.yml と同じキャッシュを共有する。
-      # download-artifact は run-id の指定が必要で、別ワークフローの成果物を
-      # 拾うのが面倒なので cache に統一している。
       - name: データベースを復元
-        id: db
         uses: actions/cache/restore@v4
         with:
           path: data/kyotei.db
           key: kyotei-db-
           restore-keys: kyotei-db-
 
-      - name: データベースがあるか確認
+      - name: データが足りているか確認
         run: |
           if [ ! -f data/kyotei.db ]; then
             echo "::error::data/kyotei.db がありません。先に「日次データ更新」を実行してください。"
@@ -61,6 +74,9 @@ jobs:
           print(f"結果確定レース: {n:,} 件 ({lo} 〜 {hi})")
           assert n >= 10000, f"学習に足りません（{n} 件）"
           EOF
+
+      - name: 現行モデルを退避
+        run: cp worker/src/model.json /tmp/model-current.json
 
       - name: 学習期間を決める（直近3か月を検証用に残す）
         id: split
@@ -78,46 +94,98 @@ jobs:
 
       - name: バックテスト
         working-directory: pipeline
+        run: python backtest.py --start ${{ steps.split.outputs.test_start }} | tee ../backtest.log
+
+      # ここが「人間の判断」の代わり。
+      # 改善していなければ以降のステップを全部飛ばす。
+      - name: 現行モデルと比較して採用可否を決める
+        id: compare
+        working-directory: pipeline
         run: |
-          python backtest.py --start ${{ steps.split.outputs.test_start }} | tee ../backtest.log
+          if python compare_models.py /tmp/model-current.json ../worker/src/model.json | tee ../compare.log; then
+            echo "adopt=true" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.force }}" = "true" ]; then
+            echo "強制採用が指定されています"
+            echo "adopt=true" >> $GITHUB_OUTPUT
+          else
+            echo "adopt=false" >> $GITHUB_OUTPUT
+          fi
 
       - name: 特徴量フィクスチャの再生成
+        if: steps.compare.outputs.adopt == 'true'
         working-directory: pipeline
         run: python export_fixture.py
 
       - uses: actions/setup-node@v4
+        if: steps.compare.outputs.adopt == 'true'
         with:
           node-version: "22"
 
-      - name: テスト（PythonとTypeScriptの特徴量が一致するか）
+      # 特徴量の実装がPython側とTypeScript側でズレていないか。
+      # ここが落ちたら絶対にデプロイしない（壊れたモデルが本番に出る）。
+      - name: テスト
+        if: steps.compare.outputs.adopt == 'true'
         working-directory: worker
         run: |
           npm ci || npm install
           npm test
 
-      - name: PR本文を組み立てる
+      - name: 新しいモデルをコミット
+        if: steps.compare.outputs.adopt == 'true'
         run: |
-          {
-            echo "## 学習"
-            echo '```'
-            cat train.log
-            echo '```'
-            echo "## バックテスト"
-            echo '```'
-            cat backtest.log
-            echo '```'
-            echo ""
-            echo "回収率が前回より下がっていないか確認してからマージしてください。"
-          } > pr-body.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add worker/src/model.json worker/test/fixture.json
+          if git diff --cached --quiet; then
+            echo "モデルに変化がありません"
+          else
+            git commit -m "chore: モデルを再学習（〜${{ steps.split.outputs.train_end }}）
 
-      - name: 結果をPRにする
-        uses: peter-evans/create-pull-request@v7
+          $(cat compare.log)"
+            git push
+          fi
+
+      - name: Cloudflare へデプロイ
+        if: steps.compare.outputs.adopt == 'true' && env.CF_TOKEN != ''
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        uses: cloudflare/wrangler-action@v3
         with:
-          branch: auto/retrain
-          title: "モデル再学習（${{ steps.split.outputs.train_end }} まで）"
-          commit-message: "chore: モデルを再学習"
-          body-path: pr-body.md
-          delete-branch: true
-          add-paths: |
-            worker/src/model.json
-            worker/test/fixture.json
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+
+      - name: 結果をLINEに通知
+        if: always()
+        working-directory: pipeline
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          ADOPTED: ${{ steps.compare.outputs.adopt }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python - <<'EOF'
+          import os
+          from notify_line import notify
+
+          status = os.environ.get("JOB_STATUS")
+          adopted = os.environ.get("ADOPTED")
+
+          def read(path):
+              try:
+                  return open(f"../{path}", encoding="utf-8").read().strip()
+              except OSError:
+                  return ""
+
+          if status == "failure":
+              body = "⚠️ 週次モデル再学習が失敗しました\n\n" + (read("train.log")[-500:] or "ログなし")
+          elif adopted == "true":
+              body = "✅ 新しいモデルをデプロイしました\n\n" + read("compare.log")
+              bt = read("backtest.log")
+              if bt:
+                  body += "\n\n" + bt[-800:]
+          else:
+              body = "― モデルを更新しませんでした（改善なし）\n\n" + read("compare.log")
+
+          notify(body)
+          EOF
