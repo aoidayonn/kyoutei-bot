@@ -15,16 +15,30 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import json
 import re
 import sqlite3
-import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import requests
 
 BASE = "https://www.boatrace.jp/owpc/pc/race"
 UA = "kyoutei-bot/1.0 (personal research)"
-SLEEP = 1.2
+
+# 直列だと開催中の全レース(約180)で3分以上かかり、
+# 30分おきに回すとGitHub Actionsの無料枠を使い切ってしまう。
+WORKERS = 6
+
+_local = threading.local()
+
+
+def _session() -> requests.Session:
+    if not hasattr(_local, "s"):
+        _local.s = requests.Session()
+        _local.s.headers.update({"User-Agent": UA})
+    return _local.s
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS odds_snapshots (
@@ -67,9 +81,20 @@ def parse_odds3t(html: str) -> dict[str, float]:
 
 def today_races(hd: str) -> list[tuple[int, int]]:
     """本日開催中の (jcd, rno) を列挙する。"""
-    res = requests.get(f"{BASE}/index?hd={hd}", headers={"User-Agent": UA}, timeout=30)
+    res = _session().get(f"{BASE}/index?hd={hd}", timeout=30)
     jcds = sorted({int(m) for m in re.findall(r"jcd=(\d{2})", res.text)})
     return [(j, r) for j in jcds if 1 <= j <= 24 for r in range(1, 13)]
+
+
+def fetch_one(hd: str, jcd: int, rno: int):
+    """1レース分のオッズを取る。未発売・締切済みなら None。"""
+    url = f"{BASE}/odds3t?rno={rno}&jcd={jcd:02d}&hd={hd}"
+    try:
+        res = _session().get(url, timeout=30)
+    except requests.RequestException:
+        return None
+    odds = parse_odds3t(res.text)
+    return odds if len(odds) >= 100 else None
 
 
 def main():
@@ -78,6 +103,7 @@ def main():
                                        / "data" / "odds.db"))
     p.add_argument("--hd", default=None, help="YYYYMMDD（省略時は今日）")
     p.add_argument("--jcd", type=int, default=None, help="特定の場だけ取る")
+    p.add_argument("--workers", type=int, default=WORKERS)
     a = p.parse_args()
 
     hd = a.hd or (dt.datetime.utcnow() + dt.timedelta(hours=9)).strftime("%Y%m%d")
@@ -90,32 +116,33 @@ def main():
     targets = today_races(hd)
     if a.jcd:
         targets = [t for t in targets if t[0] == a.jcd]
+    if not targets:
+        print("本日は開催がありません")
+        return
 
     now = dt.datetime.utcnow().isoformat()
-    saved = 0
-    for jcd, rno in targets:
-        url = f"{BASE}/odds3t?rno={rno}&jcd={jcd:02d}&hd={hd}"
-        try:
-            res = requests.get(url, headers={"User-Agent": UA}, timeout=30)
-            odds = parse_odds3t(res.text)
-        except requests.RequestException:
-            odds = {}
-        time.sleep(SLEEP)
+    rows = []
 
-        if len(odds) < 100:
-            continue  # 未発売、または締切済み
+    with ThreadPoolExecutor(max_workers=a.workers) as ex:
+        results = ex.map(lambda t: (t, fetch_one(hd, *t)), targets)
+        for (jcd, rno), odds in results:
+            if odds:
+                rows.append((
+                    f"{hd}-{jcd:02d}-{rno:02d}", now, None, json.dumps(odds),
+                ))
 
-        import json
-        con.execute(
-            "INSERT OR REPLACE INTO odds_snapshots (race_id, captured_at, minutes_left, odds_json)"
-            " VALUES (?,?,?,?)",
-            (f"{hd}-{jcd:02d}-{rno:02d}", now, None, json.dumps(odds)),
-        )
-        saved += 1
-
+    # 締切まで何分だったかは、番組表側の deadline と captured_at を突き合わせれば
+    # 後から計算できる。ここで余計なリクエストを増やさない。
+    con.executemany(
+        "INSERT OR REPLACE INTO odds_snapshots"
+        " (race_id, captured_at, minutes_left, odds_json) VALUES (?,?,?,?)",
+        rows,
+    )
     con.commit()
+
+    total, = con.execute("SELECT COUNT(*) FROM odds_snapshots").fetchone()
     con.close()
-    print(f"{saved} レース分のオッズを保存しました -> {db}")
+    print(f"{len(rows)} / {len(targets)} レースのオッズを保存（累計 {total:,} 件）-> {db}")
 
 
 if __name__ == "__main__":

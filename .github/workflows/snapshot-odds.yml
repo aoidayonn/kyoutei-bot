@@ -1,25 +1,35 @@
 name: オッズ収集
 
 # 公式は過去オッズを公開していないため、自分で貯める。
-# これが数週間たまると「期待値1.05超だけ買う」戦略の本当の回収率を検証できる。
+# これが数週間たまると「期待値1.05超だけ買う」戦略の本当の回収率を検証でき、
+# 市場とのブレンド率 λ も実測で決められるようになる。
+#
+# 過去のレースデータは後からいつでもダウンロードできるが、
+# オッズだけは今日から貯めないと永久に手に入らない。
 
 on:
   schedule:
-    # JST 12:00 / 15:00 / 18:00 / 20:30 の4回（レース開催時間帯をカバー）
-    - cron: "0 3,6,9 * * *"
-    - cron: "30 11 * * *"
+    # JST 10:00〜21:00 の30分おき（= UTC 1:00〜12:00）
+    # GitHub Actions のスケジュールは数分〜数十分遅れることがあるが、
+    # 30分刻みで拾っておけば締切直前のスナップショットが1つは残る。
+    - cron: "*/30 1-12 * * *"
   workflow_dispatch:
+
+# 前の実行が終わる前に次が始まらないようにする（DBの取り合いを防ぐ）
+concurrency:
+  group: snapshot-odds
+  cancel-in-progress: false
 
 jobs:
   snapshot:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
 
       - run: pip install requests
 
@@ -32,10 +42,24 @@ jobs:
 
       - name: オッズを取得
         working-directory: pipeline
-        run: python snapshot_odds.py
+        run: python snapshot_odds.py --workers 6
+
+      - name: 累計を表示
+        run: |
+          python - <<'EOF'
+          import os, sqlite3
+          if not os.path.exists("data/odds.db"):
+              print("まだデータがありません")
+              raise SystemExit(0)
+          con = sqlite3.connect("data/odds.db")
+          n, = con.execute("select count(*) from odds_snapshots").fetchone()
+          races, = con.execute("select count(distinct race_id) from odds_snapshots").fetchone()
+          print(f"スナップショット {n:,} 件 / {races:,} レース")
+          EOF
 
       - uses: actions/upload-artifact@v4
         with:
           name: odds-db
           path: data/odds.db
           retention-days: 90
+          overwrite: true
