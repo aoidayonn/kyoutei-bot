@@ -9,7 +9,8 @@
     "tail": "wrangler tail",
     "typecheck": "tsc --noEmit",
     "test": "node --experimental-strip-types --no-warnings --test test/*.test.mjs",
-    "db:init": "wrangler d1 execute kyoutei --remote --file=./schema.sql"
+    "db:init": "wrangler d1 execute kyoutei --remote --file=./schema.sql",
+    "secrets": "node scripts/put-secrets.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250101.0",

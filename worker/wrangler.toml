@@ -9,13 +9,13 @@ workers_dev = true
 enabled = true
 
 # 予想を残して後から的中率・回収率を検証するためのD1。
-# 事前に `npx wrangler d1 create kyoutei` を実行し、出力された database_id を貼る。
+# `npx wrangler d1 create kyoutei` の出力にある database_id を貼る。
+# これは識別子であって秘密情報ではないので、コミットして問題ない。
 [[d1_databases]]
 binding = "DB"
 database_name = "kyoutei"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "4d876330-7ccb-4544-84b2-f61580a6ae4f"
 
-# 秘密情報は wrangler secret put で登録する（このファイルには書かない）:
-#   npx wrangler secret put LINE_CHANNEL_SECRET
-#   npx wrangler secret put LINE_CHANNEL_ACCESS_TOKEN
-#   npx wrangler secret put ALLOWED_USER_ID
+# 秘密情報はこのファイルに書かない。.dev.vars に書いた値を
+# 次のコマンドでまとめて登録する（手入力はタイプミスの元）:
+#   npm run secrets
