@@ -97,6 +97,12 @@ jobs:
           [ -z "$END" ] && END=$(date -u -d '3 months ago' +%F)
           echo "train_end=$END" >> $GITHUB_OUTPUT
           echo "test_start=$(date -u -d "$END +1 day" +%F)" >> $GITHUB_OUTPUT
+          # 学習は直近36ヶ月に限定する。実測した学習曲線は
+          #   6ヶ月 3.873 / 1年 3.855 / 2年 3.851 / 3年 3.853（3連単NLL、2窓で確認）
+          # で2年以降は平坦（±0.002のノイズ）。それ以上古いデータは
+          # モーター入替や選手の変化で分布が乖離し、効かないか害になる。
+          # 上限を切らないと学習ウィンドウが毎週伸び続け、メモリと時間だけ増える。
+          echo "train_start=$(date -u -d "$END -36 months" +%F)" >> $GITHUB_OUTPUT
 
       # model.json に記録されている指標は、そのモデルを学習したときの検証期間で
       # 測ったもの。週次で再学習すると検証期間が毎回ずれるため、
@@ -112,7 +118,8 @@ jobs:
       - name: 学習
         working-directory: pipeline
         run: |
-          python train_gbm.py --train-end ${{ steps.split.outputs.train_end }} \
+          python train_gbm.py --train-start ${{ steps.split.outputs.train_start }} \
+                              --train-end ${{ steps.split.outputs.train_end }} \
                               --out ../worker/src/model.json | tee ../train.log
 
       - name: バックテスト
