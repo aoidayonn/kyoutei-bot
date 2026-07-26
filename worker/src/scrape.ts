@@ -5,7 +5,8 @@
  * 公開ページのHTMLを読む。DOMパーサは使わず、正規表現でセルを抜き出す。
  *
  * 注意: サイトのマークアップが変わると壊れる。壊れた場合は
- *       `npm run probe` で生HTMLを確認して調整すること。
+ *       `node scripts/fetch-fixtures.mjs <jcd> <rno> <hd>` で最新HTMLを取り直し、
+ *       テストの期待値と突き合わせて調整すること。
  */
 
 const BASE = "https://www.boatrace.jp/owpc/pc/race";

@@ -209,6 +209,9 @@ def main():
         )
     half = n // 2
     print(f"有効レース {n:,}（前半 {half:,} で λ を決め、後半 {n-half:,} で採点）\n")
+    if half < 1500:
+        print("⚠️ サンプルが少ないため α・β の推定は不安定です（参考値）。\n"
+              "   数千レース貯まってからの値で判断してください。\n")
 
     def nll(subset, alpha, beta):
         tot = 0.0
