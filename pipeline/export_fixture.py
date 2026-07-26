@@ -78,9 +78,13 @@ def main():
                     row = [x + rng.uniform(-0.5, 0.5) for x in base_rows[i % 6]]
                 else:
                     row = [rng.uniform(-2.0, 2.0) for _ in F.FEATURE_NAMES]
+                # 入力を丸めてから期待値を計算する。丸め前の行で計算すると、
+                # しきい値の 1e-11 以内にある値で分岐が反転し、TS側と
+                # 「保存された入力に対する正しい答え」がズレうる
+                rounded = [round(v, 10) for v in row]
                 parity_rows.append({
-                    "x": [round(v, 10) for v in row],
-                    "sum": round(model_io.eval_trees(m.trees, row), 10),
+                    "x": rounded,
+                    "sum": round(model_io.eval_trees(m.trees, rounded), 10),
                 })
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(
