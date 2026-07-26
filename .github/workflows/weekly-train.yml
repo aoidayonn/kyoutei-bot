@@ -211,6 +211,7 @@ jobs:
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           ADOPTED: ${{ steps.compare.outputs.adopt }}
           JOB_STATUS: ${{ job.status }}
+          HAS_CF_TOKEN: ${{ env.CF_TOKEN != '' }}
         run: |
           python - <<'EOF'
           import os
@@ -218,6 +219,7 @@ jobs:
 
           status = os.environ.get("JOB_STATUS")
           adopted = os.environ.get("ADOPTED")
+          deployed = os.environ.get("HAS_CF_TOKEN") == "true"
 
           def read(path):
               try:
@@ -228,7 +230,11 @@ jobs:
           if status == "failure":
               body = "⚠️ 週次モデル再学習が失敗しました\n\n" + (read("train.log")[-500:] or "ログなし")
           elif adopted == "true":
-              body = "✅ 新しいモデルをデプロイしました\n\n" + read("compare.log")
+              # CLOUDFLARE_API_TOKEN 未設定だとコミットまでで止まる。
+              # その状態で「デプロイしました」と言うのは嘘になる
+              head = ("✅ 新しいモデルをデプロイしました" if deployed
+                      else "✅ 新しいモデルをコミットしました（CLOUDFLARE_API_TOKEN 未設定のためデプロイはスキップ。手動で npm run deploy してください）")
+              body = head + "\n\n" + read("compare.log")
               bt = read("backtest.log")
               if bt:
                   body += "\n\n" + bt[-800:]

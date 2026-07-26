@@ -205,6 +205,7 @@ def main():
     inv = ret = 0
     hits = 0
     bets = 0
+    bought_races = 0
     per_race = []
     for r, q, p, win, odds in te:
         pr = pool(q, p, lam)
@@ -212,6 +213,7 @@ def main():
         if not ks:
             per_race.append(0.0)
             continue
+        bought_races += 1
         bets += len(ks)
         inv += 100 * len(ks)
         pay = r.get("payout") or 0
@@ -226,8 +228,8 @@ def main():
         print("  買える買い目が1つもありませんでした。")
         return
     roi = ret / inv
-    print(f"  対象 {len(te):,}レース中 {sum(1 for x in per_race if x != 0):,}レースで購入"
-          f"  計 {bets:,}点")
+    # 「収支ちょうど0円の購入レース」を数え落とさないよう、購入時に直接数える
+    print(f"  対象 {len(te):,}レース中 {bought_races:,}レースで購入  計 {bets:,}点")
     print(f"  投資 {inv:,}円 / 払戻 {ret:,}円 → 回収率 {roi:.2%}   的中 {hits}レース")
 
     # ブートストラップ信頼区間。3連単は分散が巨大なので点推定だけ見てはいけない。

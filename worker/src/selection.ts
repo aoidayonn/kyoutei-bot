@@ -138,7 +138,11 @@ export function buildPicks(
       return {
         combo: c.combo,
         prob,
-        modelProb: c.prob,
+        // 市場側（marketProb）は covered 上で正規化しているので、モデル側も
+        // 同じ母集団で正規化して保存する。生の c.prob のままだと selectPicks の
+        // modelProb/marketProb 比が「母集団の違う確率」の比になり、
+        // オッズが一部欠けたレースでフィルタが甘く（緩く）なる。
+        modelProb: c.prob / pSum,
         marketProb: market[c.combo] / mSum,
         odds: o,
         ev: o === null ? null : prob * o,

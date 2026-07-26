@@ -143,4 +143,11 @@ test("オッズが一部欠けていても確率の合計は1になり、欠け�
   for (const p of picks) {
     assert.ok(p.marketProb !== null, `${p.combo} に市場確率がありません`);
   }
+
+  // modelProb / marketProb は同じ母集団（オッズのある110通り）で正規化されて
+  // いること。片方だけ生のままだと maxProbRatio フィルタが甘くなる
+  const mSum = picks.reduce((a, p) => a + p.modelProb, 0);
+  const qSum = picks.reduce((a, p) => a + p.marketProb, 0);
+  assert.ok(Math.abs(mSum - 1) < 1e-9, `モデル確率の合計が ${mSum}（正規化されていない）`);
+  assert.ok(Math.abs(qSum - 1) < 1e-9, `市場確率の合計が ${qSum}`);
 });

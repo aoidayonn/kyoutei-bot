@@ -228,8 +228,11 @@ function buildReasons(
   if (e.racerClass) bits.push(e.racerClass);
   if (e.winRateLocal) bits.push(`当地勝率${e.winRateLocal.toFixed(2)}`);
   if (e.motorTop2) bits.push(`モーター2連率${e.motorTop2.toFixed(1)}%`);
+  // 選手名の抽出に失敗しても「1号艇 （A2…）」のような欠けた文にしない
+  const name = e.racerName ? ` ${e.racerName}` : "";
+  const detail = bits.length ? `（${bits.join("・")}）` : "";
   reasons.push(
-    `${top.lane}号艇 ${e.racerName}（${bits.join("・")}）が1着本命。1着確率${pct(top.p)}`,
+    `${top.lane}号艇${name}${detail}が1着本命。1着確率${pct(top.p)}`,
   );
 
   // 展示タイムの評価

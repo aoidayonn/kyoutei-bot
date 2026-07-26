@@ -99,7 +99,8 @@ jobs:
                   problems.append(f"jcd={jcd}: 出走表が{len(entries)}艇しか取れていません")
                   continue
 
-              if not all(e.get("winRateNational") for e in entries):
+              # 0.00 は新人の正当な値なので None だけを異常とみなす
+              if any(e.get("winRateNational") is None for e in entries):
                   problems.append(f"jcd={jcd}: 勝率が取れていない艇があります")
 
               # 確率が正常か
@@ -145,7 +146,7 @@ jobs:
               "⚠️ ボットの死活監視で異常を検知しました\n\n"
               + os.environ.get("PROBLEMS", "詳細不明")
               + "\n\nboatrace.jp のページ構造が変わった可能性があります。\n"
-              "MAINTENANCE.md の「スクレイパーが動かなくなった」を参照してください。\n\n"
+              "MAINTENANCE.md の「スクレイパーの修復」を参照してください。\n\n"
               + os.environ.get("RUN_URL", "")
           )
           EOF

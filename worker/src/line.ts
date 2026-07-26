@@ -74,7 +74,11 @@ function pct(p: number): string {
 
 function pickRow(p: Pick, highlight: boolean) {
   const evText = p.ev === null ? "—" : p.ev.toFixed(2);
-  const evColor = p.ev === null ? COLORS.sub : p.ev >= 1.0 ? COLORS.good : COLORS.bad;
+  // 緑 = 実際に推奨される範囲（1.05〜2.5）に合わせる。
+  // 以前は「1.0以上」で緑にしていたため、推奨されない EV 1.02 や、
+  // 「モデルの誤り」として捨てられる EV 2.5 超まで買えそうな色になっていた。
+  const evColor =
+    p.ev === null ? COLORS.sub : p.ev >= 1.05 && p.ev <= 2.5 ? COLORS.good : COLORS.bad;
   return {
     type: "box",
     layout: "horizontal",

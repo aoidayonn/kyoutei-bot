@@ -42,7 +42,7 @@ def _session() -> requests.Session:
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS odds_snapshots (
-    race_id      TEXT NOT NULL,   -- "20260725-24-12"
+    race_id      TEXT NOT NULL,   -- "2026-07-25-24-12"（kyotei.db と同形式）
     captured_at  TEXT NOT NULL,
     minutes_left INTEGER,         -- 締切まで何分か（分からなければ NULL）
     odds_json    TEXT NOT NULL,   -- {"1-2-3": 13.9, ...}

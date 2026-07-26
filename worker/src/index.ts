@@ -263,8 +263,10 @@ async function todayStadiums(): Promise<string> {
       if (STADIUMS[n]) found.add(n);
     }
     if (!found.size) return "本日の開催情報を取得できませんでした。";
-    const names = [...found].sort((a, b) => a - b).map((j) => `${j} ${STADIUMS[j]}`);
-    return `本日（${hd}）の開催場\n\n${names.join("\n")}\n\n例：「${STADIUMS[[...found][0]]} 12」`;
+    const sorted = [...found].sort((a, b) => a - b);
+    const names = sorted.map((j) => `${j} ${STADIUMS[j]}`);
+    // 例に使う場は一覧の先頭と揃える（Setの挿入順だと一覧と食い違う）
+    return `本日（${hd}）の開催場\n\n${names.join("\n")}\n\n例：「${STADIUMS[sorted[0]]} 12」`;
   } catch {
     return "本日の開催情報を取得できませんでした。";
   }
