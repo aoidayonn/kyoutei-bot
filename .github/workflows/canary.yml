@@ -58,6 +58,13 @@ jobs:
 
           hd = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(hours=9)).strftime("%Y%m%d")
 
+          # リポジトリ側のモデルversion（本番と一致しているべき値）
+          try:
+              with open("worker/src/model.json", encoding="utf-8") as f:
+                  expected_version = json.load(f).get("version")
+          except OSError:
+              expected_version = None
+
           # 本日開催中の場を探して、最初に見つかったレースで検証する
           index = requests.get(
               f"https://www.boatrace.jp/owpc/pc/race/index?hd={hd}",
@@ -115,6 +122,16 @@ jobs:
               # オッズが取れているか（取れないと期待値判定ができない）
               if not data.get("hasOdds"):
                   problems.append(f"jcd={jcd}: オッズを取得できていません")
+
+              # 本番のモデルがリポジトリと一致しているか（デプロイ漏れの検知）。
+              # 改善をコミット・Pushしても、デプロイされなければ本番は古いまま
+              # 動き続け、それ自体は「正常応答」なので他のチェックでは気づけない
+              if expected_version and data.get("modelVersion") not in (None, "unknown"):
+                  if data["modelVersion"] != expected_version:
+                      problems.append(
+                          f"本番のモデルが古いです（本番 {data['modelVersion']} / "
+                          f"リポジトリ {expected_version}）。デプロイ漏れの可能性"
+                      )
 
           if checked == 0:
               problems.append("1件も検証できませんでした")

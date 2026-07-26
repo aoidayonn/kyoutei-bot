@@ -1,0 +1,64 @@
+name: Workerデプロイ
+
+# worker/ に変更が push されたら本番へデプロイする。
+#
+# これが無かった頃、デプロイは「週次学習がモデルを採用したとき」にしか
+# 走らなかった。つまりモデルが採用されない週は、コードの修正
+# （買い目フィルタのバグ修正・表示の修正など）が**永遠に本番へ届かない**。
+# 実際に、枠ペア較正と当節成績を含む数日分の改善が本番に反映されないまま
+# 動き続けていたことが実測で確認された（/predict の応答に setsuN が無かった）。
+#
+# 週次学習のコミット（github-actions[bot]）は週次側が自分でデプロイするので、
+# ここでは人間の push だけを対象にする（二重デプロイの防止）。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "worker/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # テストが通らないものは本番に出さない
+      - name: テスト
+        working-directory: worker
+        run: |
+          npm ci || npm install
+          npm test
+
+      - name: Cloudflare へデプロイ
+        if: env.CF_TOKEN != ''
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+
+      - name: トークン未設定の警告
+        if: env.CF_TOKEN == ''
+        run: echo "::warning::CLOUDFLARE_API_TOKEN が未設定のためデプロイをスキップしました。手動で 'cd worker && npm run deploy' を実行してください。"

@@ -192,6 +192,9 @@ export async function predict(
     jcd,
     rno,
     hd,
+    // 死活監視が「本番に古いモデル/コードが残っていないか」を検知するために出す。
+    // リポジトリの model.json の version と一致しなければデプロイ漏れ
+    modelVersion: (MODEL as { version?: string }).version ?? "unknown",
     stadium: stadiumName(jcd),
     deadline: race.deadline,
     hasBeforeInfo: race.hasBeforeInfo,
