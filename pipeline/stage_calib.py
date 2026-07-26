@@ -180,7 +180,8 @@ def trifecta_nll(V, X, order, calib):
     return total
 
 
-def fit(V, X, order, use_features=True, verbose=True):
+def fit(V, X, order, use_features=True, verbose=True,
+        steps_first=500, steps_stage=400):
     """較正パラメータ一式を推定する。
 
     V: (N,6) 温度適用済みの効用   X: (N,6,F) 生の特徴量   order: (N,3) 着順の艇index
@@ -201,7 +202,7 @@ def fit(V, X, order, use_features=True, verbose=True):
 
     # 1着ステージの残差補正（2・3着と同じ思想の、対称的な完成形）
     if use_features:
-        bias, w1 = _fit_first(V, Xs, order[:, 0])
+        bias, w1 = _fit_first(V, Xs, order[:, 0], steps=steps_first)
         out["first"] = {
             "bias": [round(float(b), 6) for b in bias],
             # 標準化を畳み込んで配る（TS側は内積1本で済む）
@@ -218,7 +219,8 @@ def fit(V, X, order, use_features=True, verbose=True):
             mask[idx, order[:, j]] = False
         target = order[:, stage]
         conds = [(6, order[:, j]) for j in range(stage)]
-        a, Ms, w = _fit_stage(V, Xs, mask, target, conds, use_features)
+        a, Ms, w = _fit_stage(V, Xs, mask, target, conds, use_features,
+                              steps=steps_stage)
         nll, _ = _softmax_nll(
             a * V + sum(M[i] for M, (_, i) in zip(Ms, conds))
             + ((Xs.reshape(N * 6, -1) @ w).reshape(N, 6) if w is not None else 0.0),

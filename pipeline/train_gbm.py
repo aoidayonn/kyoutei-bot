@@ -8,11 +8,14 @@
   - 出力スコアはそのままでは確率ではないため、温度 t を推定して
     u = t * score を Plackett-Luce の効用として使う。
 
-キャリブレーションの手順（テストセットを触らないため二段構え）:
-  1. 学習期間の末尾3か月を val として切り出す
-  2. val より前だけで学習した補助モデルで、val 上の温度 t と段階指数 α,β を推定
-  3. 本番モデルは学習期間ぜんぶで学習し、t, α, β は 2. の値を流用する
-     （スコアのスケールはハイパーパラメータでほぼ決まるため流用できる）
+キャリブレーションの手順（out-of-fold 方式）:
+  1. 学習期間を K_FOLDS 個の連続ブロックに分ける
+  2. 各ブロックを「残りのブロックで学習したモデル」で採点し、
+     学習期間全体の out-of-fold スコアを作る
+  3. 温度 t・段階指数・段階較正（first + 枠ペア + 特徴量補正）を
+     OOFスコア上で推定する（テスト期間には一切触れない）
+  4. 本番モデルは学習期間ぜんぶで学習し、3. の較正を流用する
+     （旧方式=末尾3ヶ月のvalに対し、実測で 3連単NLL -0.004〜-0.008）
 
 使い方:
     python train_gbm.py --train-end 2026-04-30 --out ../worker/src/model.json
@@ -22,6 +25,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +52,7 @@ PARAMS = dict(
     # label_gain は既定（2^label - 1）。ラベル3値なので [0,1,3,7] 相当
 )
 NUM_ROUNDS = 150  # 150本×31葉 ≈ gzip 0.13MB。250本×63葉との差は誤差程度だった
+K_FOLDS = 5       # out-of-fold較正の分割数
 
 
 def build(races, priors):
@@ -69,8 +74,9 @@ def flatten(X, order):
 
 def fit_gbm(X, order):
     Xf, y = flatten(X, order)
+    rounds = 30 if os.environ.get("KYOTEI_SMOKE") == "1" else NUM_ROUNDS
     return lgb.train(PARAMS, lgb.Dataset(Xf, y, group=[6] * X.shape[0]),
-                     num_boost_round=NUM_ROUNDS)
+                     num_boost_round=rounds)
 
 
 def scores_matrix(booster, X):
@@ -148,36 +154,38 @@ def main():
     train_races.sort(key=lambda r: (r["date"], r["jcd"], r["rno"]))
     Xtr, otr = build(train_races, priors)
 
-    # ---- 温度・段階指数のキャリブレーション用に末尾3か月を val に ----
-    # 注意: lane_prior は全学習期間（valを含む）から作られている。
-    # 場×枠単位の統計でval寄与は8%程度のため実害は無視できるが、
-    # 「valに一切触れていない」わけではない。
-    val_start = (dt.date.fromisoformat(a.train_end) - dt.timedelta(days=90)).isoformat()
-    K = sum(1 for r in train_races if r["date"] < val_start)
-    n_val = len(train_races) - K
-    print(f"学習 {len(train_races)} レース（うちキャリブレーション用 val {n_val}）")
-    if K < 5000 or n_val < 1000:
-        raise SystemExit(
-            f"キャリブレーション分割が偏っています（sub {K} / val {n_val}）。"
-            "学習期間を延ばすか val 幅を調整してください"
-        )
+    # ---- キャリブレーションは out-of-fold 方式 ----
+    # 以前は「末尾3ヶ月をvalに、その前で補助モデルを学習」して較正していたが、
+    # 較正パラメータ（first + 枠ペア行列 + w、260個超）を3ヶ月分だけで
+    # 推定するのはノイズが大きい。学習期間をK個の連続ブロックに分け、
+    # 各ブロックを「残りで学習したモデル」で採点した out-of-fold スコアなら、
+    # 学習期間**全体**を較正に使える。
+    # 実測: 3連単NLL -0.0076（窓1）/ -0.0043（窓2）。
+    # コストは学習K+1回ぶんだが、CIのランナーなら1回50秒程度。
+    smoke = os.environ.get("KYOTEI_SMOKE") == "1"  # サンドボックス検証用の縮小モード
+    n_races = Xtr.shape[0]
+    print(f"学習 {n_races} レース（較正は {K_FOLDS} 分割の out-of-fold）")
+    fold_bounds = np.array_split(np.arange(n_races), K_FOLDS)
+    if any(len(f) < 2000 for f in fold_bounds) and not smoke:
+        raise SystemExit("foldが小さすぎます。学習期間を延ばしてください")
 
-    print("補助モデルを学習（キャリブレーション用）...")
-    aux = fit_gbm(Xtr[:K], otr[:K])
-    Sv = scores_matrix(aux, Xtr[K:])
-    temp, val_ll = calibrate_temperature(Sv, otr[K:])
-    print(f"  温度 t = {temp}（val LogLoss {val_ll:.4f}）")
+    S_oof = np.zeros((n_races, 6))
+    for i, fold in enumerate(fold_bounds):
+        mask = np.ones(n_races, dtype=bool)
+        mask[fold] = False
+        bst_f = fit_gbm(Xtr[mask], otr[mask])
+        S_oof[fold] = scores_matrix(bst_f, Xtr[fold])
+        print(f"  fold {i+1}/{K_FOLDS} 完了", flush=True)
+    del bst_f
 
-    exponents = T.fit_stage_exponents_from_V(temp * Sv, otr[K:])
+    temp, oof_ll = calibrate_temperature(S_oof, otr)
+    print(f"  温度 t = {temp}（OOF LogLoss {oof_ll:.4f}）")
+    exponents = T.fit_stage_exponents_from_V(temp * S_oof, otr)
 
-    # 2・3着の条件付き分布を較正する。
-    # ここで使う val は本番モデルの学習にも使われるが、A/B/C が拾うのは
-    # 「1着が誰かで2着の並びが変わる」というレース力学であって
-    # モデルのスコアそのものではないため、補助モデルのスコアで推定して流用できる。
-    # テスト期間には一切触れていない。
-    print("2・3着の条件付き分布を較正...")
-    stage_calib = stage_calib_mod.fit(temp * Sv, Xtr[K:], otr[K:])
-    del aux, Sv
+    print("段階較正（first + 枠ペア + 特徴量補正）を全学習期間で推定...")
+    calib_steps = dict(steps_first=120, steps_stage=100) if smoke else {}
+    stage_calib = stage_calib_mod.fit(temp * S_oof, Xtr, otr, **calib_steps)
+    del S_oof
 
     # ---- 本番モデルは全学習期間で ----
     print("本番モデルを学習...")

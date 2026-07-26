@@ -78,29 +78,45 @@ def calibrate_temperature(S, order):
 
 
 def symmetric_metrics(m: "model_io.Model", races):
-    """評価窓を前半（較正）／後半（採点）に割って測る。
+    """モデルを「出荷された状態のまま」（焼き込み済みの温度・較正）で測る。
 
-    較正パラメータ（温度・段階指数・枠ペア相互作用）は前半だけで推定し、
-    後半は一度も見ずに採点する。枠ペア較正はパラメータが200個以上あり、
-    採点区間で当てると「増やした分だけ良く見える」だけになるため。
-    新旧どちらのモデルもこの同一手順を通るので比較は公平。
+    かつては評価窓で温度・較正を再推定していた。理由は「初期の線形モデルが
+    温度を持たず、比較が非対称になる」ため。現在は新旧どちらの model.json も
+    温度と段階較正一式を焼き込んで出荷されるので、**実際にデプロイされる
+    アーティファクト同士**を同じ窓で比べるのが最も公平で、しかも
+    較正の質の改善（val→out-of-fold化など）もゲートに正しく反映される。
+
+    再推定プロトコルだと較正はゲート側で毎回作り直されるため、
+    「較正の作り方」を良くしても差がゼロに見えてしまう。
+
+    較正を持たない旧形式モデルが来た場合だけ、後方互換として
+    評価窓の前半で較正を推定する（後半で採点）。
     """
     X, order, _ = T.build_matrices(races, m.priors)
     S = np.array([m.raw_utilities(rows) for rows in X])
     Xa = np.asarray(X, dtype=float)
 
-    n = S.shape[0]
-    half = n // 2
-    cal, sco = slice(0, half), slice(half, n)
+    if m.stage_calib:
+        # 出荷物そのまま。評価窓のどこにも当てはめを行わない
+        V = getattr(m, "temperature", 1.0) * S
+        osc = order
+        Xs = Xa
+        calib = m.stage_calib
+        exps = list(m.stage_exponents)
+        t = getattr(m, "temperature", 1.0)
+    else:
+        # 後方互換: 前半で較正、後半で採点
+        n = S.shape[0]
+        half = n // 2
+        t, _ = calibrate_temperature(S[:half], order[:half])
+        exps = T.fit_stage_exponents_from_V(t * S[:half], order[:half], verbose=False)
+        calib = stage_calib.fit(t * S[:half], Xa[:half], order[:half], verbose=False)
+        V = t * S[half:]
+        osc = order[half:]
+        Xs = Xa[half:]
 
-    t, _ = calibrate_temperature(S[cal], order[cal])
-    exps = T.fit_stage_exponents_from_V(t * S[cal], order[cal], verbose=False)
-    calib = stage_calib.fit(t * S[cal], Xa[cal], order[cal], verbose=False)
-
-    V = t * S[sco]
-    osc = order[sco]
     # 1着の指標も本番と同じ較正（firstブロック込み）で測る
-    sc1 = stage_calib.first_scores(V, Xa[sco], calib)
+    sc1 = stage_calib.first_scores(V, Xs, calib)
     mx = sc1.max(axis=1, keepdims=True)
     prob = np.exp(sc1 - mx)
     prob /= prob.sum(axis=1, keepdims=True)
@@ -111,7 +127,7 @@ def symmetric_metrics(m: "model_io.Model", races):
         baseline_lane1=float((osc[:, 0] == 0).mean()),
         logloss=float(-np.log(np.clip(prob[idx, osc[:, 0]], 1e-12, None)).mean()),
         # 商品指標。較正あり（本番と同じ展開）を主指標にする。
-        trifecta_nll=stage_calib.trifecta_nll(V, Xa[sco], osc, calib),
+        trifecta_nll=stage_calib.trifecta_nll(V, Xs, osc, calib),
         # 参考: 枠ペアを使わない旧方式でも測っておく
         trifecta_nll_scalar=nll3(V, osc, exps),
         refit_temperature=t,
