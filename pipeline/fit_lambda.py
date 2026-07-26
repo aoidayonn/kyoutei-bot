@@ -97,11 +97,16 @@ def market_probs(odds: dict[str, float]) -> dict[str, float] | None:
 
 
 def pool(q: dict, p: dict, alpha: float, beta: float) -> dict:
-    """Benter式の対数線形結合 s ∝ q^α · p^β（正規化して確率に戻す）。"""
+    """Benter式の対数線形結合 s ∝ q^α · p^β（正規化して確率に戻す）。
+
+    本番（selection.ts buildPicks）と同じく、モデル確率は
+    「オッズのある組」の上で正規化し直してから結合する。
+    """
+    psum = sum(p.get(k, 0.0) for k in q) or 1e-12
     out = {}
     tot = 0.0
     for k, qv in q.items():
-        pv = p.get(k, 1e-9)
+        pv = p.get(k, 1e-9) / psum
         v = math.exp(alpha * math.log(max(qv, 1e-12))
                      + beta * math.log(max(pv, 1e-12)))
         out[k] = v
@@ -109,8 +114,15 @@ def pool(q: dict, p: dict, alpha: float, beta: float) -> dict:
     return {k: v / tot for k, v in out.items()}
 
 
-def picks_for(prob: dict, odds: dict, q: dict) -> list[str]:
-    """selection.ts と同じ絞り込み。確率降順で最大5点。"""
+def picks_for(prob: dict, p_model: dict, odds: dict, q: dict) -> list[str]:
+    """selection.ts と同じ絞り込み。確率降順で最大5点。
+
+    外挿ガード（maxProbRatio）は本番と同じく
+    **素のモデル確率 ÷ 市場確率**（どちらもオッズのある組で正規化）で判定する。
+    ブレンド後の確率で割ると市場に引き寄せられて比が小さく出て、
+    本番なら弾く買い目を買った体で回収率を測ってしまう。
+    """
+    psum = sum(p_model.get(k, 0.0) for k in q) or 1e-12
     cands = []
     for k, p in prob.items():
         o = odds.get(k)
@@ -122,7 +134,8 @@ def picks_for(prob: dict, odds: dict, q: dict) -> list[str]:
         if p < MIN_PROB:
             continue
         qm = q.get(k, 1e-9)
-        if qm > 0 and p / qm > MAX_PROB_RATIO:
+        pm = p_model.get(k, 0.0) / psum
+        if qm > 0 and pm / qm > MAX_PROB_RATIO:
             continue
         cands.append((p, k))
     cands.sort(reverse=True)
@@ -258,7 +271,7 @@ def main():
     per_race = []
     for r, q, p, win, odds in te:
         pr = pool(q, p, use_a, use_b)
-        ks = picks_for(pr, odds, q)
+        ks = picks_for(pr, p, odds, q)
         if not ks:
             per_race.append(0.0)
             continue
