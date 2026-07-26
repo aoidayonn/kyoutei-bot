@@ -66,7 +66,7 @@ def main():
     d_acc = new["win_accuracy"] - old["win_accuracy"]  # 正なら改善
 
     use_nll3 = "trifecta_nll" in old and "trifecta_nll" in new
-    print("検証データでの比較（同一期間・温度と段階指数は両モデルとも再推定済み）")
+    print("検証データでの比較（新旧とも出荷状態のまま・同一期間で採点）")
     if use_nll3:
         d_main = old["trifecta_nll"] - new["trifecta_nll"]  # 正なら改善
         print(f"  3連単NLL   {old['trifecta_nll']:.4f} → {new['trifecta_nll']:.4f}  ({d_main:+.4f})")

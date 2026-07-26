@@ -88,19 +88,34 @@ jobs:
           assert n >= 10000, f"学習に足りません（{n} 件）"
           EOF
 
-      - name: 現行モデルを退避
-        run: cp worker/src/model.json /tmp/model-current.json
+      # 審査は「審査用の双子」同士で行う（下の split コメント参照）。
+      # 初回は双子が無いので、配備中の model.json を審査相手にする。
+      - name: 現行の審査用モデルを退避
+        run: |
+          if [ -f pipeline/model_eval.json ]; then
+            cp pipeline/model_eval.json /tmp/model-current.json
+          else
+            cp worker/src/model.json /tmp/model-current.json
+          fi
 
-      - name: 学習期間を決める（直近1か月を検証用に残す）
+      - name: 学習期間を決める（審査3ヶ月ラグ / 配備は昨日まで）
         id: split
         run: |
-          # 検証窓は以前3ヶ月だったが、その分学習データが常に3ヶ月古くなる。
-          # 1ヶ月（約4,500レース）でもゲートの判定には足り、
-          # 学習が2ヶ月ぶん新しくなる方が得（ドリフト追従は実測で効いている）
+          # 「審査の正確さ」と「配備の新しさ」は検証窓の取り合いになる:
+          #   検証1ヶ月 → 学習は新しいがノイズ±0.003で判定不能（実際に起きた）
+          #   検証3ヶ月 → 判定は正確だが本番モデルが常に3ヶ月古い
+          # そこで二段構えにする:
+          #   審査用の双子: 3ヶ月前まで学習 → 13,000レースの窓で新旧レシピを審査
+          #   配備用モデル: 同じレシピで昨日まで学習 → 審査済みなので再審査不要
+          #     （同一レシピでデータを増やす・新しくするのは単調に得、が前提。
+          #       壊れ方はテスト・パリティ・死活監視が受け止める）
           END="${{ github.event.inputs.train_end }}"
-          [ -z "$END" ] && END=$(date -u -d '1 month ago' +%F)
+          [ -z "$END" ] && END=$(date -u -d '3 months ago' +%F)
           echo "train_end=$END" >> $GITHUB_OUTPUT
           echo "test_start=$(date -u -d "$END +1 day" +%F)" >> $GITHUB_OUTPUT
+          DEPLOY_END=$(date -u -d 'yesterday' +%F)
+          echo "deploy_end=$DEPLOY_END" >> $GITHUB_OUTPUT
+          echo "deploy_start=$(date -u -d "$DEPLOY_END -36 months" +%F)" >> $GITHUB_OUTPUT
           # 学習は直近36ヶ月に限定する。実測した学習曲線は
           #   6ヶ月 3.873 / 1年 3.855 / 2年 3.851 / 3年 3.853（3連単NLL、2窓で確認）
           # で2年以降は平坦（±0.002のノイズ）。それ以上古いデータは
@@ -119,16 +134,16 @@ jobs:
                                    --start ${{ steps.split.outputs.test_start }} \
                                    --out /tmp/current-metrics.json
 
-      - name: 学習
+      - name: 学習（審査用の双子）
         working-directory: pipeline
         run: |
           python train_gbm.py --train-start ${{ steps.split.outputs.train_start }} \
                               --train-end ${{ steps.split.outputs.train_end }} \
-                              --out ../worker/src/model.json | tee ../train.log
+                              --out model_eval.json | tee ../train.log
 
-      - name: バックテスト
+      - name: バックテスト（審査用の双子を審査窓で）
         working-directory: pipeline
-        run: python backtest.py --start ${{ steps.split.outputs.test_start }} | tee ../backtest.log
+        run: python backtest.py --model model_eval.json --start ${{ steps.split.outputs.test_start }} | tee ../backtest.log
 
       # 新モデルも旧モデルと同じ手順（温度・段階指数を同一窓で再推定）で測る。
       # model.json 内の自己申告メトリクスを使うと、キャリブレーションの
@@ -136,7 +151,7 @@ jobs:
       - name: 新モデルを同じ検証期間で測る
         working-directory: pipeline
         run: |
-          python evaluate_model.py --model ../worker/src/model.json \
+          python evaluate_model.py --model model_eval.json \
                                    --start ${{ steps.split.outputs.test_start }} \
                                    --out /tmp/new-metrics.json
 
@@ -164,6 +179,15 @@ jobs:
             echo "adopt=false" >> $GITHUB_OUTPUT
           fi
 
+      # レシピが審査を通ったので、同じレシピで昨日まで学習した配備用を作る
+      - name: 学習（配備用・昨日まで）
+        if: steps.compare.outputs.adopt == 'true'
+        working-directory: pipeline
+        run: |
+          python train_gbm.py --train-start ${{ steps.split.outputs.deploy_start }} \
+                              --train-end ${{ steps.split.outputs.deploy_end }} \
+                              --out ../worker/src/model.json | tee -a ../train.log
+
       - name: 特徴量フィクスチャの再生成
         if: steps.compare.outputs.adopt == 'true'
         working-directory: pipeline
@@ -188,7 +212,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add worker/src/model.json worker/test/fixture.json
+          git add worker/src/model.json worker/test/fixture.json pipeline/model_eval.json
           if git diff --cached --quiet; then
             echo "モデルに変化がありません"
           else
