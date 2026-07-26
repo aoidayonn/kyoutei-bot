@@ -103,10 +103,23 @@ test("model.json に必要なキーが揃っている", () => {
     assert.ok(key in model, `model.json に ${key} がありません`);
   }
   assert.equal(Object.keys(model.lane_prior).length, 144, "場×枠は24×6=144件のはずです");
-  assert.ok(
-    model.metrics.test.win_accuracy > model.metrics.test.baseline_lane1,
-    "検証データで「1号艇固定」に勝てていません",
-  );
+
+  // 配備用モデルは「昨日まで」学習するため検証期間がなく metrics.test を持たない
+  // （品質の審査は審査用の双子と採用ゲートが担う）。
+  // metrics.test がある場合だけ従来の検証を行い、無い場合は train 側の
+  // 健全性（インサンプルですら1号艇固定に勝てないのは壊れている）を見る。
+  if (model.metrics.test) {
+    assert.ok(
+      model.metrics.test.win_accuracy > model.metrics.test.baseline_lane1,
+      "検証データで「1号艇固定」に勝てていません",
+    );
+  } else {
+    assert.ok(model.metrics.train, "metrics.train がありません");
+    assert.ok(
+      model.metrics.train.win_accuracy > model.metrics.train.baseline_lane1,
+      "学習データ上ですら「1号艇固定」に勝てていません（学習が壊れています）",
+    );
+  }
 });
 
 // --- コマンド解釈 ---
