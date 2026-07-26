@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { parseRacelist, parseBeforeInfo, parseOdds3t } from "../src/scrape.ts";
 import { buildFeatures } from "../src/features.ts";
 import { evalTrees } from "../src/gbm.ts";
-import { scoresFromUtilities, trifectaProbabilities, winProbabilities } from "../src/plackettLuce.ts";
+import { trifectaProbabilities, winProbabilitiesCalibrated } from "../src/plackettLuce.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(join(here, "fixtures", n), "utf-8");
@@ -68,7 +68,7 @@ function buildPrediction() {
   const X = buildFeatures(race, priors);
   const utilities = utilitiesOf(X);
   return {
-    winProbs: winProbabilities(scoresFromUtilities(utilities)),
+    winProbs: winProbabilitiesCalibrated(utilities, CALIB, X),
     combos: trifectaProbabilities(utilities, STAGE, CALIB, X),
     odds,
   };

@@ -99,8 +99,10 @@ def symmetric_metrics(m: "model_io.Model", races):
 
     V = t * S[sco]
     osc = order[sco]
-    mx = V.max(axis=1, keepdims=True)
-    prob = np.exp(V - mx)
+    # 1着の指標も本番と同じ較正（firstブロック込み）で測る
+    sc1 = stage_calib.first_scores(V, Xa[sco], calib)
+    mx = sc1.max(axis=1, keepdims=True)
+    prob = np.exp(sc1 - mx)
     prob /= prob.sum(axis=1, keepdims=True)
     idx = np.arange(V.shape[0])
     return dict(

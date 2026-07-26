@@ -34,7 +34,14 @@ export interface StageBlock {
   weights?: number[];  // 特徴量の線形補正（標準化は畳み込み済み）
 }
 
+export interface FirstBlock {
+  bias: number[];      // b[枠]（6個）
+  weights?: number[];  // w1（標準化は畳み込み済み）
+}
+
 export interface StageCalib {
+  /** 1着ステージの残差補正。2・3着と同じ思想の対称的な完成形 */
+  first?: FirstBlock;
   second: StageBlock;
   third: StageBlock;
 }
@@ -72,6 +79,36 @@ function stageBase(
     out.push(b);
   }
   return out;
+}
+
+/** 1着ステージのスコア（"first" ブロック適用済み）。v は温度適用済み効用。 */
+export function firstStageScores(
+  v: number[], calib?: StageCalib, features?: number[][],
+): number[] {
+  const m = Math.max(...v);
+  const blk = calib?.first;
+  const out: number[] = [];
+  for (let j = 0; j < LANES; j++) {
+    let s = v[j] - m;
+    if (blk) {
+      s += blk.bias[j];
+      if (blk.weights && features) s += dot(blk.weights, features[j]);
+    }
+    out.push(s);
+  }
+  return out;
+}
+
+/** 1着確率（firstブロック込み）。★pipeline/plackett_luce.py と一致させる。 */
+export function winProbabilitiesCalibrated(
+  utilities: number[], calib?: StageCalib, features?: number[][],
+): number[] {
+  const sc = firstStageScores(utilities.map(Number), calib, features);
+  const m = Math.max(...sc);
+  if (!Number.isFinite(m)) return utilities.map(() => 0);
+  const e = sc.map((x) => Math.exp(x - m));
+  const t = e.reduce((a, b) => a + b, 0);
+  return e.map((x) => x / t);
 }
 
 /** base[j] + Σextras[j] を、excluded を除いた集合でソフトマックス。 */
@@ -118,26 +155,28 @@ export function trifectaProbabilities(
   // 空を返して「取得失敗」として扱わせる方が安全側。
   if (!Number.isFinite(m)) return [];
 
+  let base1: number[];
   let base2: number[];
   let base3: number[];
   let A: number[][] | undefined;
   let B: number[][] | undefined;
   let C: number[][] | undefined;
-  const e1 = 1;
 
   if (calib) {
+    base1 = firstStageScores(v, calib, features);
     base2 = stageBase(v, m, calib.second, features);
     base3 = stageBase(v, m, calib.third, features);
     A = calib.second.pair;
     B = calib.third.pair;
     C = calib.third.pair2;
   } else {
-    const [, a2, a3] = exponents;
+    const [e1, a2, a3] = exponents;
+    base1 = v.map((x) => e1 * (x - m));
     base2 = v.map((x) => a2 * (x - m));
     base3 = v.map((x) => a3 * (x - m));
   }
 
-  const p1 = condProbs(v.map((x) => e1 * (x - m)), [], []);
+  const p1 = condProbs(base1, [], []);
   if (!p1) return [];
 
   const out: Combo[] = [];

@@ -26,6 +26,17 @@ w2, w3 は「2着/3着に効く特徴は1着に効く特徴と違う」ぶんの
         + 枠ペア                  3.8050   市場との差 +0.1393
         + 枠ペア + 特徴量再学習     3.7898   市場との差 +0.1240
 
+1着ステージの補正（"first" ブロック）
+------------------------------------
+2・3着に行列と特徴量補正があるのに、1着だけ温度スカラー1個だった。
+較正窓で 1着にも b[枠] + w1・x の残差補正を当てると、直近のドリフト
+（枠の強さの季節変動・モーター周期など）を拾える:
+
+        1着: v_j + b[j] + w1 . x_j        （v は温度適用済み）
+
+実測: 1着LL -0.0046（窓1）/ -0.0049（窓2）。ステージ加法なので
+3連単NLLにそのまま乗る。
+
 較正はテスト期間に触れてはいけない。train_gbm.py では
 補助モデル用の val 区間（学習期間の末尾3か月）だけで推定する。
 """
@@ -92,6 +103,49 @@ def _fit_stage(V, Xs, mask, target, conds, use_feat, steps=400, lr=0.15,
     return float(a[0]), Ms, w
 
 
+def _fit_first(V, Xs, target, steps=500, lr=0.1, l2_feat=1e-2):
+    """1着ステージの残差補正: score_j = V_j + b[j] + w.Xs_j（凸）。"""
+    N = V.shape[0]
+    idx = np.arange(N)
+    bias = np.zeros(6)
+    w = np.zeros(Xs.shape[2])
+    X2 = Xs.reshape(N * 6, -1)
+    mask = np.ones((N, 6), dtype=bool)
+    state: dict[str, tuple] = {}
+
+    def adam(name, p, g, step):
+        m, v = state.setdefault(name, (np.zeros_like(p), np.zeros_like(p)))
+        m = 0.9 * m + 0.1 * g
+        v = 0.999 * v + 0.001 * g * g
+        state[name] = (m, v)
+        return p - lr * (m / (1 - 0.9**step)) / (np.sqrt(v / (1 - 0.999**step)) + 1e-8)
+
+    for step in range(1, steps + 1):
+        sc = V + bias + (X2 @ w).reshape(N, 6)
+        _, p = _softmax_nll(sc, mask, target)
+        g = p.copy()
+        g[idx, target] -= 1.0
+        g /= N
+        bias = adam("b", bias, g.sum(axis=0), step)
+        bias -= bias.mean()  # ソフトマックスで消える定数を固定して一意にする
+        w = adam("w", w, X2.T @ g.reshape(-1) + l2_feat * w, step)
+    return bias, w
+
+
+def first_scores(V, X, calib):
+    """1着ステージのスコア（firstブロック適用済み）。V: (N,6) 温度適用済み。"""
+    V = np.asarray(V, dtype=float)
+    blk = (calib or {}).get("first")
+    if not blk:
+        return V
+    N = V.shape[0]
+    sc = V + np.asarray(blk["bias"], dtype=float)
+    if blk.get("weights") is not None:
+        w = np.asarray(blk["weights"], dtype=float)
+        sc = sc + (np.asarray(X, dtype=float).reshape(N * 6, -1) @ w).reshape(N, 6)
+    return sc
+
+
 def trifecta_nll(V, X, order, calib):
     """較正パラメータ込みの3連単NLL（1〜3着の完全対数尤度）をベクトル化して計算。
 
@@ -109,7 +163,7 @@ def trifecta_nll(V, X, order, calib):
     mask = np.ones((N, 6), dtype=bool)
     for stage in range(3):
         if stage == 0:
-            sc = V.copy()
+            sc = first_scores(V, X, calib)
         else:
             blk = calib["second" if stage == 1 else "third"]
             sc = float(blk["exponent"]) * V
@@ -144,6 +198,20 @@ def fit(V, X, order, use_features=True, verbose=True):
     Xs = (X - mu) / sd
 
     out: dict = {}
+
+    # 1着ステージの残差補正（2・3着と同じ思想の、対称的な完成形）
+    if use_features:
+        bias, w1 = _fit_first(V, Xs, order[:, 0])
+        out["first"] = {
+            "bias": [round(float(b), 6) for b in bias],
+            # 標準化を畳み込んで配る（TS側は内積1本で済む）
+            "weights": [round(float(x), 8) for x in (w1 / sd)],
+        }
+        if verbose:
+            nll, _ = _softmax_nll(first_scores(V, X, out), np.ones((N, 6), bool),
+                                  order[:, 0])
+            print(f"  first: b[枠]+w1  1着NLL {nll:.4f}")
+
     for stage, key in ((1, "second"), (2, "third")):
         mask = np.ones((N, 6), dtype=bool)
         for j in range(stage):

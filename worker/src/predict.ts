@@ -12,10 +12,9 @@ import model from "./model.json";
 import { buildFeatures, FEATURE_NAMES, type Priors, type RaceInput } from "./features";
 import { evalTrees, type Tree } from "./gbm";
 import {
-  scoresFromUtilities,
   trifectaProbabilities,
   type StageCalib,
-  winProbabilities,
+  winProbabilitiesCalibrated,
 } from "./plackettLuce";
 import { buildPicks, selectPicks, DEFAULT_OPTIONS, type Pick } from "./selection";
 import { fetchOdds, fetchRace, type ScrapedRace } from "./scrape";
@@ -71,6 +70,16 @@ const STAGE_CALIB = MODEL.stage_calib;
     // 行列の形が崩れていると undefined が数値演算に流れ込み、
     // 例外ではなく NaN 確率として静かに広がる。
     if (MODEL.stage_calib) {
+      const fb = MODEL.stage_calib.first;
+      if (fb) {
+        if (fb.bias.length !== 6 || fb.bias.some((x) => !Number.isFinite(x))) {
+          throw new Error("stage_calib.first.bias が6要素の有限値ではありません");
+        }
+        if (fb.weights && (fb.weights.length !== FEATURE_NAMES.length
+                           || fb.weights.some((x) => !Number.isFinite(x)))) {
+          throw new Error("stage_calib.first.weights の長さが特徴量の数と違います");
+        }
+      }
       for (const key of ["second", "third"] as const) {
         const b = MODEL.stage_calib[key];
         if (!b) throw new Error(`stage_calib.${key} がありません`);
@@ -123,6 +132,8 @@ export interface Prediction {
   jcd: number;
   rno: number;
   hd: string;
+  /** デプロイ漏れ検知用（死活監視がリポジトリのmodel.jsonと照合する） */
+  modelVersion: string;
   stadium: string;
   deadline: string | null;
   hasBeforeInfo: boolean;
@@ -180,8 +191,10 @@ export async function predict(
 
   const X = buildFeatures(input, PRIORS);
   const utilities = computeUtilities(X);
-  const scores = scoresFromUtilities(utilities);
-  const winProbs = winProbabilities(scores);
+  // 1着確率は120通り展開の1着ステージと同じ較正（firstブロック）を通す。
+  // ここを素のソフトマックスのままにすると、表示される1着確率と
+  // 買い目の中身が別の分布になってしまう
+  const winProbs = winProbabilitiesCalibrated(utilities, STAGE_CALIB, X);
   const combos = trifectaProbabilities(utilities, STAGE_EXPONENTS, STAGE_CALIB, X);
 
   const withEv = buildPicks(combos, odds, DEFAULT_OPTIONS.modelWeight);

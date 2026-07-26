@@ -46,6 +46,31 @@ def _stage_base(v, m, block, features):
     return out
 
 
+def first_stage_scores(v, calib, features):
+    """1着ステージのスコア（"first" ブロック適用済み）。v は温度適用済み効用。"""
+    m = max(v)
+    blk = (calib or {}).get("first")
+    out = []
+    for j in range(LANES):
+        s = v[j] - m
+        if blk:
+            s += blk["bias"][j]
+            w = blk.get("weights")
+            if w and features is not None:
+                s += _dot(w, features[j])
+        out.append(s)
+    return out
+
+
+def win_probabilities_calibrated(utilities, calib, features):
+    """1着確率（firstブロック込み）。★worker側 predict.ts の winProbs と一致させる。"""
+    sc = first_stage_scores([float(x) for x in utilities], calib, features)
+    m = max(sc)
+    e = [math.exp(x - m) for x in sc]
+    t = sum(e)
+    return [x / t for x in e]
+
+
 def _cond_probs(base, extras, excluded):
     """base[j] + Σextras[j] を、excluded を除いた集合でソフトマックス。"""
     sc = [0.0] * LANES
@@ -87,19 +112,21 @@ def trifecta_probabilities(utilities, exponents=(1.0, 1.0, 1.0),
     if calib:
         b2 = calib["second"]
         b3 = calib["third"]
-        e1 = 1.0
         base2 = _stage_base(v, m, b2, features)
         base3 = _stage_base(v, m, b3, features)
         A = b2.get("pair")
         B = b3.get("pair")
         C = b3.get("pair2")
+        # 1着ステージの残差補正（b[枠] + w1・x）。stage_calib.py の "first"
+        base1 = first_stage_scores(v, calib, features)
     else:
         e1, a2, a3 = exponents
+        base1 = [e1 * (x - m) for x in v]
         base2 = [a2 * (x - m) for x in v]
         base3 = [a3 * (x - m) for x in v]
         A = B = C = None
 
-    p1 = _cond_probs([e1 * (x - m) for x in v], [], set())
+    p1 = _cond_probs(base1, [], set())
     if p1 is None:
         return {}
 

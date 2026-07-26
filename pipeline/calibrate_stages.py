@@ -78,7 +78,15 @@ def main():
     print(f"対象 {n:,} レース（{a.start} 〜 {a.end or '最新'}）")
     print(f"\n[1] 前半 {half:,} で推定 → 後半 {n-half:,} で採点（改善が本物かの確認）")
     calib_half = SC.fit(V[:half], Xa[:half], order[:half], verbose=False)
-    old = scalar_nll(V[half:], order[half:], m.stage_exponents)
+    # 基準は「モデルに既に載っている較正」。無ければスカラー段階指数。
+    # 旧実装はスカラーとだけ比べていたため、較正済みモデルに対して
+    # 改善幅を過大に見せていた
+    if m.stage_calib:
+        old = SC.trifecta_nll(V[half:], Xa[half:], order[half:], m.stage_calib)
+        base_label = "現行（既存の較正）"
+    else:
+        old = scalar_nll(V[half:], order[half:], m.stage_exponents)
+        base_label = "現行（段階指数のみ）"
     new = SC.trifecta_nll(V[half:], Xa[half:], order[half:], calib_half)
 
     payout = np.array([r.get("payout") or 0 for r in races], dtype=float)
@@ -86,8 +94,8 @@ def main():
     mkt = float(-np.log(PAYOUT_RATE / (payout[half:][ok] / 100.0)).mean())
 
     print(f"    市場                 {mkt:.4f}")
-    print(f"    現行（段階指数のみ）    {old:.4f}   市場との差 {old-mkt:+.4f}")
-    print(f"    枠ペア較正あり         {new:.4f}   市場との差 {new-mkt:+.4f}")
+    print(f"    {base_label}    {old:.4f}   市場との差 {old-mkt:+.4f}")
+    print(f"    再較正後              {new:.4f}   市場との差 {new-mkt:+.4f}")
     print(f"    改善 {old-new:+.4f}")
 
     if new >= old:
