@@ -64,6 +64,7 @@ test("特徴量の数値が Python 側と一致している", async (t) => {
   // fixture の snake_case を features.ts の camelCase に詰め替える
   const race = {
     jcd: fixture.race.jcd,
+    rno: fixture.race.rno,
     windSpeed: fixture.race.wind_speed,
     waveHeight: fixture.race.wave_height,
     entries: fixture.race.entries.map((e) => ({
@@ -79,6 +80,9 @@ test("特徴量の数値が Python 側と一致している", async (t) => {
       age: e.age,
       weight: e.weight,
       exTime: e.ex_time,
+      setsuN: e.setsu_n,
+      setsuWins: e.setsu_wins,
+      setsuAvgRank: e.setsu_avg_rank,
     })),
   };
 
@@ -133,6 +137,7 @@ test("GBMの木トラバーサルが Python 実装と数値一致する", async 
 
   const race = {
     jcd: fixture.race.jcd,
+    rno: fixture.race.rno,
     windSpeed: fixture.race.wind_speed,
     waveHeight: fixture.race.wave_height,
     entries: fixture.race.entries.map((e) => ({
@@ -141,6 +146,7 @@ test("GBMの木トラバーサルが Python 実装と数値一致する", async 
       winRateLocal: e.win_rate_local, top2Local: e.top2_local,
       motorTop2: e.motor_top2, boatTop2: e.boat_top2,
       age: e.age, weight: e.weight, exTime: e.ex_time,
+      setsuN: e.setsu_n, setsuWins: e.setsu_wins, setsuAvgRank: e.setsu_avg_rank,
     })),
   };
   // 期待値は「本番モデルのpriors」で作られている（fixtureの合成priorsではない）
@@ -170,6 +176,7 @@ test("120通りの展開が Python 実装と数値一致する", async (t) => {
 
   const race = {
     jcd: fixture.race.jcd,
+    rno: fixture.race.rno,
     windSpeed: fixture.race.wind_speed,
     waveHeight: fixture.race.wave_height,
     entries: fixture.race.entries.map((e) => ({
@@ -178,6 +185,7 @@ test("120通りの展開が Python 実装と数値一致する", async (t) => {
       winRateLocal: e.win_rate_local, top2Local: e.top2_local,
       motorTop2: e.motor_top2, boatTop2: e.boat_top2,
       age: e.age, weight: e.weight, exTime: e.ex_time,
+      setsuN: e.setsu_n, setsuWins: e.setsu_wins, setsuAvgRank: e.setsu_avg_rank,
     })),
   };
   const priors = { lane_prior: model.lane_prior, racer_lane: model.racer_lane ?? {} };

@@ -31,6 +31,12 @@ export interface ScrapedEntry {
   boatTop2: number | null;
   exTime: number | null;
   tilt: number | null;
+  /** 当節ここまでのレース数（今節成績グリッドから。着順が付いたものだけ） */
+  setsuN: number | null;
+  /** うち1着 */
+  setsuWins: number | null;
+  /** 平均着順（走っていなければ null） */
+  setsuAvgRank: number | null;
 }
 
 export interface ScrapedRace {
@@ -102,7 +108,72 @@ function q(jcd: number, rno: number, hd: string): string {
  *   cell[6] : "56 44.44 65.43"      （モーター番号 / 2連率 / 3連率）
  *   cell[7] : "170 34.62 58.97"     （ボート番号 / 2連率 / 3連率）
  */
-export function parseRacelist(html: string): Partial<ScrapedEntry>[] {
+/**
+ * 今節成績グリッド（1選手分の tbody）を読む。
+ *
+ * 構造は4行:
+ *   tr[0] … 走った/走る予定の R番号（"5R" 等。艇番色クラス付きのリンク）
+ *   tr[1] … 進入コース
+ *   tr[2] … ST
+ *   tr[3] … 着順（全角数字。Ｆ・転・落など数字以外は着外扱い）
+ *
+ * 当日の早いレースの結果も、確定するとこのグリッドに載る（実地確認済み）。
+ * rno を渡すと「いま見ているレース自身」（R番号が一致する最後の列）を除外する。
+ * これをしないと、締切後に照会したとき自分自身の結果が特徴量に混ざる。
+ */
+export function parseSetsu(
+  tb: string,
+  rno?: number,
+): { setsuN: number; setsuWins: number; setsuAvgRank: number | null } {
+  const rows = [...tb.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map((m) => m[1]);
+  const empty = { setsuN: 0, setsuWins: 0, setsuAvgRank: null };
+  if (rows.length < 4) return empty;
+
+  // rowspan 付きセル（艇番・写真・選手情報…）はグリッドの一部ではない
+  const gridCells = (row: string) =>
+    [...row.matchAll(/<td((?:(?!rowspan)[^>])*)>([\s\S]*?)<\/td>/g)].map((m) => m[2]);
+
+  const rCells = gridCells(rows[0]);
+  const finishCells = gridCells(rows[rows.length - 1]);
+  if (rCells.length === 0 || rCells.length !== finishCells.length) return empty;
+
+  // 全角数字 → 半角
+  const z2h = (s: string) =>
+    s.replace(/[０-９]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+
+  const cols = rCells.map((rc, i) => ({
+    r: toNum(stripTags(rc)),
+    finish: (() => {
+      const t = z2h(stripTags(finishCells[i]));
+      const m = t.match(/^([1-6])$/);
+      return m ? parseInt(m[1], 10) : null;
+    })(),
+  }));
+
+  // いま見ているレース自身を除外（R番号一致の最後の列。
+  // 同じR番号を別の日に走った列は残す）
+  if (rno) {
+    for (let i = cols.length - 1; i >= 0; i--) {
+      if (cols[i].r === rno) {
+        cols.splice(i, 1);
+        break;
+      }
+    }
+  }
+
+  let n = 0;
+  let wins = 0;
+  let sum = 0;
+  for (const col of cols) {
+    if (col.finish === null) continue; // 未走・F・失格などは数えない（DB側の rank NULL と同じ）
+    n++;
+    sum += col.finish;
+    if (col.finish === 1) wins++;
+  }
+  return { setsuN: n, setsuWins: wins, setsuAvgRank: n ? sum / n : null };
+}
+
+export function parseRacelist(html: string, rno?: number): Partial<ScrapedEntry>[] {
   const out: Partial<ScrapedEntry>[] = [];
 
   for (const tb of tbodies(html)) {
@@ -123,8 +194,10 @@ export function parseRacelist(html: string): Partial<ScrapedEntry>[] {
 
     const nameMatch = profile.match(/[0-9]{4}\s*\/\s*[AB][12]\s*(.+?)\s*[^\s]*\/[^\s]*\s*\d+歳/);
     const ageWeight = profile.match(/(\d+)歳\s*\/\s*([\d.]+)kg/);
+    const setsu = parseSetsu(tb, rno);
 
     out.push({
+      ...setsu,
       lane: out.length + 1,
       racerId: parseInt(idm[1], 10),
       racerClass: idm[2],
@@ -257,7 +330,7 @@ export async function fetchRace(
     get(`${BASE}/beforeinfo${q(jcd, rno, hd)}`).catch(() => ""),
   ]);
 
-  const base = parseRacelist(racelistHtml);
+  const base = parseRacelist(racelistHtml, rno);
   if (base.length < 6) {
     throw new Error(
       "出走表を取得できませんでした（開催なし・未公開・欠場で6艇そろっていない、のいずれか）",

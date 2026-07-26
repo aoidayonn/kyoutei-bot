@@ -155,6 +155,7 @@ export async function predict(
 
   const input: RaceInput = {
     jcd,
+    rno,
     windSpeed: race.windSpeed,
     waveHeight: race.waveHeight,
     entries: race.entries.map((e) => ({
@@ -170,6 +171,9 @@ export async function predict(
       age: e.age,
       weight: e.weight,
       exTime: e.exTime,
+      setsuN: e.setsuN,
+      setsuWins: e.setsuWins,
+      setsuAvgRank: e.setsuAvgRank,
     })),
   };
 

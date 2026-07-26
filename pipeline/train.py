@@ -74,6 +74,11 @@ def load_races(con, start=None, end=None):
         m = meta[rid]
         m["entries"] = sorted(entries, key=lambda e: e["lane"])
         out.append(m)
+
+    # 当節成績はどの用途（学習・評価・バックテスト）でも同じ定義で必要になるため
+    # ここで一括して埋める。窓の最初の6日は履歴が無く「節の初走」扱いになる
+    # （全モデルに同条件なのでゲートの公平性は崩れない）。
+    annotate_setsu(out)
     return out
 
 
@@ -182,6 +187,60 @@ def annotate_racer_lane_expanding(races, min_races=5, shrink=15.0):
                 cnt[(rid, lane)] += 1
                 if lane == first:
                     win[(rid, lane)] += 1
+
+
+def annotate_setsu(races):
+    """当節成績を各エントリに埋め込む（e["setsu_n" / "setsu_wins" / "setsu_avg_rank"]）。
+
+    定義: 同じ場で「6日以内の過去日」または「同日の早いレース番号」の結果。
+    節は最長7日なので6日で節内をちょうど覆う。まれに前の節が混ざるが、
+    本番（racelist の今節成績グリッド）とのズレは無視できる規模。
+
+    rank が NULL の走り（F・失格など）は数えない。これは本番側でも
+    着順の数字が無いセルを数えないのと対応する。
+
+    リークについて: 使うのは対象レースより**前**の結果だけ。
+    そのレース自身の結果は含まれない（annotate_racer_lane_expanding と同じ原則）。
+    """
+    by_racer = defaultdict(list)
+    for r in races:
+        for e in r["entries"]:
+            rid = e.get("racer_id")
+            if rid:
+                by_racer[(r["jcd"], rid)].append((r["date"], r["rno"], e))
+
+    import datetime as _dt
+    _memo: dict[str, int] = {}
+
+    def dnum(s):
+        v = _memo.get(s)
+        if v is None:
+            y, m, d = s.split("-")
+            v = _dt.date(int(y), int(m), int(d)).toordinal()
+            _memo[s] = v
+        return v
+
+    for key, lst in by_racer.items():
+        lst.sort(key=lambda t: (t[0], t[1]))
+        for i, (date, rno, e) in enumerate(lst):
+            dn = dnum(date)
+            n = w = 0
+            s = 0.0
+            j = i - 1
+            while j >= 0:
+                d2, r2, e2 = lst[j]
+                dd = dn - dnum(d2)
+                if dd > 6:
+                    break
+                rk = e2.get("rank")
+                if (dd > 0 or (dd == 0 and r2 < rno)) and rk is not None:
+                    n += 1
+                    w += 1 if rk == 1 else 0
+                    s += rk
+                j -= 1
+            e["setsu_n"] = float(n)
+            e["setsu_wins"] = float(w)
+            e["setsu_avg_rank"] = (s / n) if n else 3.5
 
 
 def exclude_nonstarter_races(races):

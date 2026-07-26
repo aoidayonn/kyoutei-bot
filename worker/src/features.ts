@@ -24,6 +24,12 @@ export const FEATURE_NAMES = [
   "motor_x_lane4", "motor_x_lane5", "motor_x_lane6",
   "ex_x_lane1", "ex_x_lane2", "ex_x_lane3",
   "ex_x_lane4", "ex_x_lane5", "ex_x_lane6",
+  // 当節成績（今節成績グリッドから）。実測で3連単NLL -0.016〜-0.021（2窓で再現）
+  "setsu_n",
+  "setsu_wins",
+  "setsu_avg_rank",
+  // レース番号（12R=優勝戦などの番組情報）
+  "race_no",
 ] as const;
 
 export const N_FEATURES = FEATURE_NAMES.length;
@@ -73,10 +79,18 @@ export interface EntryInput {
   age?: number | null;
   weight?: number | null;
   exTime?: number | null;
+  /** 当節ここまでのレース数（今節成績グリッドの着順セルを数えたもの） */
+  setsuN?: number | null;
+  /** うち1着の数 */
+  setsuWins?: number | null;
+  /** 平均着順。走っていなければ null（→3.5扱い） */
+  setsuAvgRank?: number | null;
 }
 
 export interface RaceInput {
   jcd: number;
+  /** レース番号 1〜12 */
+  rno?: number | null;
   windSpeed?: number | null;
   waveHeight?: number | null;
   entries: EntryInput[]; // 6件、lane 昇順
@@ -159,6 +173,15 @@ export function buildFeatures(race: RaceInput, priors: Priors): number[][] {
     row[IDX[`wr_x_lane${lane}`]] = (wr - 5.5) / 2;
     row[IDX[`motor_x_lane${lane}`]] = (mt - 35) / 20;
     row[IDX[`ex_x_lane${lane}`]] = exRel;
+
+    // 当節成績。Python側 (features.py) と同一のロジック:
+    // n>0 のときだけ平均着順を使い、それ以外は 3.5（節の初走）
+    const sn = Number.isFinite(e.setsuN as number) ? (e.setsuN as number) : 0;
+    row[IDX["setsu_n"]] = sn;
+    row[IDX["setsu_wins"]] = Number.isFinite(e.setsuWins as number) ? (e.setsuWins as number) : 0;
+    row[IDX["setsu_avg_rank"]] =
+      sn > 0 && Number.isFinite(e.setsuAvgRank as number) ? (e.setsuAvgRank as number) : 3.5;
+    row[IDX["race_no"]] = Number.isFinite(race.rno as number) ? (race.rno as number) : 0;
 
     // 最終防衛線: どの経路から来た NaN/Inf もモデルに渡さない
     for (let k = 0; k < row.length; k++) {

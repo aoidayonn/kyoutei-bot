@@ -34,12 +34,14 @@ function utilitiesOf(X) {
 }
 
 function buildPrediction() {
-  const base = parseRacelist(fx("racelist.html"));
+  // 本番(fetchRace)と同じく rno を渡して自レースの列を除外する
+  const base = parseRacelist(fx("racelist.html"), 1);
   const before = parseBeforeInfo(fx("beforeinfo.html"));
   const odds = parseOdds3t(fx("odds3t.html"));
 
   const race = {
     jcd: 22,
+    rno: 1,
     windSpeed: before.windSpeed,
     waveHeight: before.waveHeight,
     entries: base.map((e, i) => ({
@@ -55,6 +57,9 @@ function buildPrediction() {
       age: e.age,
       weight: e.weight,
       exTime: before.exhibition[i]?.exTime ?? null,
+      setsuN: e.setsuN,
+      setsuWins: e.setsuWins,
+      setsuAvgRank: e.setsuAvgRank,
     })),
   };
 

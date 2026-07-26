@@ -50,6 +50,36 @@ test("出走表から6艇分の選手データを取れる", () => {
   }
 });
 
+test("今節成績グリッドから当節の成績を取れる", () => {
+  // 手動デコード済みの期待値（racelist-setsu.html は 2026-07-26 桐生11R）。
+  // lane1 西村: 節の6走 (4R:2着, 12R:2着, 5R:1着, 12R:1着, 3R:1着, 11R:1着)。
+  // rno=11 を渡すと「いま見ている11R自身」の列が除外され、5走になる。
+  const entries = parseRacelist(fx("racelist-setsu.html"), 11);
+  assert.equal(entries.length, 6);
+  const e1 = entries[0];
+  assert.equal(e1.setsuN, 5);
+  assert.equal(e1.setsuWins, 3);
+  assert.ok(Math.abs(e1.setsuAvgRank - 1.4) < 1e-9);
+  // lane2 三川: (3,1,1,1,5) → 平均2.2
+  assert.equal(entries[1].setsuN, 5);
+  assert.equal(entries[1].setsuWins, 3);
+  assert.ok(Math.abs(entries[1].setsuAvgRank - 2.2) < 1e-9);
+  // 全艇に値が入ること（当日夜のレースなので全員走っている）
+  for (const e of entries) assert.ok(e.setsuN >= 4, `${e.lane}号艇の当節成績が取れていません`);
+});
+
+test("今節成績: rno を渡さなければ全列を数える（節の初走はゼロ）", () => {
+  // 古いフィクスチャ（初日近く）: lane1 は前走1本（5R 6着）のみ
+  const entries = parseRacelist(fx("racelist.html"), 1);
+  assert.equal(entries[0].setsuN, 1);
+  assert.equal(entries[0].setsuWins, 0);
+  assert.equal(entries[0].setsuAvgRank, 6);
+  // rno=5 を渡すと 5R の列（唯一の前走）が自レースとして除外される
+  const excl = parseRacelist(fx("racelist.html"), 5);
+  assert.equal(excl[0].setsuN, 0);
+  assert.equal(excl[0].setsuAvgRank, null);
+});
+
 test("直前情報から展示タイムと気象を取れる", () => {
   const info = parseBeforeInfo(fx("beforeinfo.html"));
   assert.equal(info.exhibition.length, 6);

@@ -48,6 +48,14 @@ FEATURE_NAMES = [
     # 展示タイム × 枠
     "ex_x_lane1", "ex_x_lane2", "ex_x_lane3",
     "ex_x_lane4", "ex_x_lane5", "ex_x_lane6",
+    # 当節成績（同じ節のこれまでの走り）。市場が重視するのにモデルに無かった情報。
+    # 出走表ページの「今節成績」グリッドから取れる。
+    # 実測: 3連単NLL -0.016〜-0.021（2窓で再現）
+    "setsu_n",         # 当節でここまで走ったレース数
+    "setsu_wins",      # うち1着の数
+    "setsu_avg_rank",  # 平均着順（走っていなければ 3.5）
+    # レース番号。12R=優勝戦など番組編成の情報を持つ（gain比 1.4%）
+    "race_no",
 ]
 
 N_FEATURES = len(FEATURE_NAMES)
@@ -180,6 +188,22 @@ def build_features(race: dict, priors) -> list[list[float]]:
         row[idx[f"wr_x_lane{lane}"]] = (wr - 5.5) / 2.0
         row[idx[f"motor_x_lane{lane}"]] = (mt - 35.0) / 20.0
         row[idx[f"ex_x_lane{lane}"]] = ex_rel
+
+        # 当節成績。学習時は train.annotate_setsu() が埋め、
+        # 推論時は scrape.ts が今節成績グリッドから読む。無ければ「節の初走」扱い。
+        n = _finite(e.get("setsu_n"))
+        row[idx["setsu_n"]] = n
+        row[idx["setsu_wins"]] = _finite(e.get("setsu_wins"))
+        # TS側と同一: n>0 かつ有限値のときだけ平均着順、それ以外は 3.5
+        ar = e.get("setsu_avg_rank")
+        try:
+            arf = float(ar) if ar is not None else None
+            if arf is not None and not _math.isfinite(arf):
+                arf = None
+        except (TypeError, ValueError):
+            arf = None
+        row[idx["setsu_avg_rank"]] = arf if (n > 0 and arf is not None) else 3.5
+        row[idx["race_no"]] = _finite(race.get("rno"))
 
         # 最終防衛線: どの経路から来た NaN/Inf もモデルに渡さない（TS側と同一）
         rows.append([x if _math.isfinite(x) else 0.0 for x in row])
