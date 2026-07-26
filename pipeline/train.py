@@ -38,7 +38,8 @@ def load_races(con, start=None, end=None):
                r.trifecta, r.trifecta_payout, r.trifecta_pop,
                e.lane, e.racer_class, e.win_rate_national, e.top2_national,
                e.win_rate_local, e.top2_local, e.motor_top2, e.boat_top2,
-               e.age, e.weight, e.exhibition_time, e.rank, e.racer_id
+               e.age, e.weight, e.exhibition_time, e.rank, e.racer_id,
+               e.start_timing
         FROM races r JOIN entries e ON e.race_id = r.race_id
         WHERE r.trifecta IS NOT NULL
     """
@@ -64,7 +65,7 @@ def load_races(con, start=None, end=None):
             win_rate_local=row[13], top2_local=row[14],
             motor_top2=row[15], boat_top2=row[16],
             age=row[17], weight=row[18], ex_time=row[19], rank=row[20],
-            racer_id=row[21],
+            racer_id=row[21], start_timing=row[22],
         ))
 
     out = []
@@ -226,21 +227,31 @@ def annotate_setsu(races):
             dn = dnum(date)
             n = w = 0
             s = 0.0
+            st_n = 0
+            st_s = 0.0
             j = i - 1
             while j >= 0:
                 d2, r2, e2 = lst[j]
                 dd = dn - dnum(d2)
                 if dd > 6:
                     break
-                rk = e2.get("rank")
-                if (dd > 0 or (dd == 0 and r2 < rno)) and rk is not None:
-                    n += 1
-                    w += 1 if rk == 1 else 0
-                    s += rk
+                if dd > 0 or (dd == 0 and r2 < rno):
+                    rk = e2.get("rank")
+                    if rk is not None:
+                        n += 1
+                        w += 1 if rk == 1 else 0
+                        s += rk
+                    # 当節の実ST。F(マイナス)・欠測・0は数えない。
+                    # 本番側（今節成績グリッドのST行）も同じ基準で読む。
+                    st = e2.get("start_timing")
+                    if st is not None and 0 < st < 1:
+                        st_n += 1
+                        st_s += st
                 j -= 1
             e["setsu_n"] = float(n)
             e["setsu_wins"] = float(w)
             e["setsu_avg_rank"] = (s / n) if n else 3.5
+            e["setsu_avg_st"] = (st_s / st_n) if st_n else None
 
 
 def exclude_nonstarter_races(races):

@@ -37,6 +37,8 @@ export interface ScrapedEntry {
   setsuWins: number | null;
   /** 平均着順（走っていなければ null） */
   setsuAvgRank: number | null;
+  /** 当節の実ST平均（F・欠測除く。無ければ null） */
+  setsuAvgSt: number | null;
 }
 
 export interface ScrapedRace {
@@ -124,9 +126,9 @@ function q(jcd: number, rno: number, hd: string): string {
 export function parseSetsu(
   tb: string,
   rno?: number,
-): { setsuN: number; setsuWins: number; setsuAvgRank: number | null } {
+): { setsuN: number; setsuWins: number; setsuAvgRank: number | null; setsuAvgSt: number | null } {
   const rows = [...tb.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/g)].map((m) => m[1]);
-  const empty = { setsuN: 0, setsuWins: 0, setsuAvgRank: null };
+  const empty = { setsuN: 0, setsuWins: 0, setsuAvgRank: null, setsuAvgSt: null };
   if (rows.length < 4) return empty;
 
   // rowspan 付きセル（艇番・写真・選手情報…）はグリッドの一部ではない
@@ -134,6 +136,7 @@ export function parseSetsu(
     [...row.matchAll(/<td((?:(?!rowspan)[^>])*)>([\s\S]*?)<\/td>/g)].map((m) => m[2]);
 
   const rCells = gridCells(rows[0]);
+  const stCells = gridCells(rows[rows.length - 2]);
   const finishCells = gridCells(rows[rows.length - 1]);
   if (rCells.length === 0 || rCells.length !== finishCells.length) return empty;
 
@@ -147,6 +150,16 @@ export function parseSetsu(
       const t = z2h(stripTags(finishCells[i]));
       const m = t.match(/^([1-6])$/);
       return m ? parseInt(m[1], 10) : null;
+    })(),
+    st: (() => {
+      // ".08" の形式。toNum は先頭の "." を読めず 8 になるので専用に解く。
+      // F（フライング）は学習側の 0<st<1 フィルタと合わせて除外する
+      const t = z2h(stripTags(stCells[i] ?? ""));
+      if (/[FfＦ]/.test(t)) return null;
+      const m = t.match(/(\d*\.\d+)/);
+      if (!m) return null;
+      const v = parseFloat(m[1].startsWith(".") ? "0" + m[1] : m[1]);
+      return v > 0 && v < 1 ? v : null;
     })(),
   }));
 
@@ -164,13 +177,24 @@ export function parseSetsu(
   let n = 0;
   let wins = 0;
   let sum = 0;
+  let stN = 0;
+  let stSum = 0;
   for (const col of cols) {
+    if (col.st !== null) {
+      stN++;
+      stSum += col.st;
+    }
     if (col.finish === null) continue; // 未走・F・失格などは数えない（DB側の rank NULL と同じ）
     n++;
     sum += col.finish;
     if (col.finish === 1) wins++;
   }
-  return { setsuN: n, setsuWins: wins, setsuAvgRank: n ? sum / n : null };
+  return {
+    setsuN: n,
+    setsuWins: wins,
+    setsuAvgRank: n ? sum / n : null,
+    setsuAvgSt: stN ? stSum / stN : null,
+  };
 }
 
 export function parseRacelist(html: string, rno?: number): Partial<ScrapedEntry>[] {

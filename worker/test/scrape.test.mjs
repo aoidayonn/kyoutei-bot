@@ -60,6 +60,8 @@ test("今節成績グリッドから当節の成績を取れる", () => {
   assert.equal(e1.setsuN, 5);
   assert.equal(e1.setsuWins, 3);
   assert.ok(Math.abs(e1.setsuAvgRank - 1.4) < 1e-9);
+  // ST行 (.08,.02,.15,.10,.18) の平均。現レース11Rの .21 は除外される
+  assert.ok(Math.abs(e1.setsuAvgSt - 0.106) < 1e-9);
   // lane2 三川: (3,1,1,1,5) → 平均2.2
   assert.equal(entries[1].setsuN, 5);
   assert.equal(entries[1].setsuWins, 3);
@@ -78,6 +80,7 @@ test("今節成績: rno を渡さなければ全列を数える（節の初走�
   const excl = parseRacelist(fx("racelist.html"), 5);
   assert.equal(excl[0].setsuN, 0);
   assert.equal(excl[0].setsuAvgRank, null);
+  assert.equal(excl[0].setsuAvgSt, null);
 });
 
 test("直前情報から展示タイムと気象を取れる", () => {

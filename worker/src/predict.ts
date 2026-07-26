@@ -174,6 +174,7 @@ export async function predict(
       setsuN: e.setsuN,
       setsuWins: e.setsuWins,
       setsuAvgRank: e.setsuAvgRank,
+      setsuAvgSt: e.setsuAvgSt,
     })),
   };
 

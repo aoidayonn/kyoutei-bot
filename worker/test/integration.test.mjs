@@ -60,6 +60,7 @@ function buildPrediction() {
       setsuN: e.setsuN,
       setsuWins: e.setsuWins,
       setsuAvgRank: e.setsuAvgRank,
+      setsuAvgSt: e.setsuAvgSt,
     })),
   };
 

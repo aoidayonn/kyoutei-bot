@@ -30,6 +30,8 @@ export const FEATURE_NAMES = [
   "setsu_avg_rank",
   // レース番号（12R=優勝戦などの番組情報）
   "race_no",
+  // 注意: 当節ST平均は実験2窓で効いたが本番構成のゲートで再現せず不採用
+  // （詳細は features.py 側のコメント）。scrape.ts の ST 解析は将来用に残す。
 ] as const;
 
 export const N_FEATURES = FEATURE_NAMES.length;
@@ -85,6 +87,8 @@ export interface EntryInput {
   setsuWins?: number | null;
   /** 平均着順。走っていなければ null（→3.5扱い） */
   setsuAvgRank?: number | null;
+  /** 当節の実ST平均（秒）。F・欠測は除く。無ければ null */
+  setsuAvgSt?: number | null;
 }
 
 export interface RaceInput {
