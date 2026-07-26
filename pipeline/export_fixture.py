@@ -53,15 +53,35 @@ def main():
     # 本番モデルがGBMなら、同じ入力に対する期待効用も出力する。
     # TS側の木トラバーサル（gbm.ts）がPython実装と一致することをテストで固定する。
     expected_utilities = None
+    parity_rows = None
     model_path = OUT.parent.parent / "src" / "model.json"
     if model_path.exists():
         import model_io
-        try:
-            m = model_io.load_model(model_path)
-            model_rows = F.build_features(SAMPLE_RACE, m.priors)
-            expected_utilities = [round(u, 10) for u in m.utilities(model_rows)]
-        except SystemExit:
-            pass  # 特徴量不一致のときはこの後の再学習で直る
+        # 不一致は握りつぶさない。ここで例外を握ると fixture に null が書かれ、
+        # TS側のパリティテストが skip になって「検証が黙って消える」
+        m = model_io.load_model(model_path)
+        model_rows = F.build_features(SAMPLE_RACE, m.priors)
+        expected_utilities = [round(u, 10) for u in m.utilities(model_rows)]
+
+        if m.type == "lightgbm_rank":
+            # 葉のカバレッジを上げるため、決定的な擬似ランダム行でも
+            # 木トラバーサルのパリティを固定する（固定レース6行だけだと
+            # 4,650葉のうち1割しか通らない）
+            import random
+            rng = random.Random(20260726)
+            parity_rows = []
+            base_rows = model_rows
+            for i in range(60):
+                if i < 6:
+                    row = list(base_rows[i])
+                elif i < 30:
+                    row = [x + rng.uniform(-0.5, 0.5) for x in base_rows[i % 6]]
+                else:
+                    row = [rng.uniform(-2.0, 2.0) for _ in F.FEATURE_NAMES]
+                parity_rows.append({
+                    "x": [round(v, 10) for v in row],
+                    "sum": round(model_io.eval_trees(m.trees, row), 10),
+                })
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(
         json.dumps(
@@ -71,6 +91,7 @@ def main():
                 "priors": SAMPLE_PRIORS,
                 "expected": [[round(x, 10) for x in row] for row in rows],
                 "expected_utilities": expected_utilities,
+                "parity_rows": parity_rows,
             },
             ensure_ascii=False,
             indent=2,

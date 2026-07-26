@@ -105,10 +105,20 @@ def build_features(race: dict, priors) -> list[list[float]]:
         "racer_lane": {"4320-1": 0.42, ...},  # 選手-枠 -> 平均との差
     }
     """
+    import math as _math
+
+    def _finite(v):
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return 0.0
+        return f if _math.isfinite(f) else 0.0
+
     lane_prior = priors.get("lane_prior", {})
     racer_lane = priors.get("racer_lane", {})
-    wind = race.get("wind_speed") or 0
-    wave = race.get("wave_height") or 0
+    # NaN は `or 0` をすり抜ける（truthy）。TS側と同じく完全に遮断する
+    wind = _finite(race.get("wind_speed"))
+    wave = _finite(race.get("wave_height"))
     jcd = race["jcd"]
 
     # 展示タイムはレース内の相対で効く。平均を基準に符号反転（速い=大きい）
@@ -171,6 +181,7 @@ def build_features(race: dict, priors) -> list[list[float]]:
         row[idx[f"motor_x_lane{lane}"]] = (mt - 35.0) / 20.0
         row[idx[f"ex_x_lane{lane}"]] = ex_rel
 
-        rows.append(row)
+        # 最終防衛線: どの経路から来た NaN/Inf もモデルに渡さない（TS側と同一）
+        rows.append([x if _math.isfinite(x) else 0.0 for x in row])
 
     return rows

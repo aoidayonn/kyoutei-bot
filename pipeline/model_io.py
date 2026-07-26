@@ -37,6 +37,10 @@ def compact_trees(dump: dict) -> list[dict]:
             if "leaf_value" in node:
                 v.append(float(node["leaf_value"]))
                 return ~(len(v) - 1)
+            # 数値分割(<=)のみ対応。カテゴリ分割が来たら黙って壊れる前に止める
+            dt = node.get("decision_type")
+            if dt not in (None, "<="):
+                raise SystemExit(f"未対応の decision_type: {dt}（categorical_feature は使わないこと）")
             i = len(f)
             f.append(int(node["split_feature"]))
             t.append(float(node["threshold"]))
@@ -95,11 +99,17 @@ class Model:
         else:
             raise SystemExit(f"未知の model_type: {self.type}")
 
-    def utilities(self, rows) -> list[float]:
-        """1レース分（6艇の特徴量行列）→ 効用ベクトル。"""
+    def raw_utilities(self, rows) -> list[float]:
+        """温度を掛ける前の生スコア（キャリブレーション再推定用）。"""
         if self.type == "linear":
             return [sum(x * w for x, w in zip(row, self.w)) for row in rows]
-        return [self.temperature * eval_trees(self.trees, row) for row in rows]
+        return [eval_trees(self.trees, row) for row in rows]
+
+    def utilities(self, rows) -> list[float]:
+        """1レース分（6艇の特徴量行列）→ 効用ベクトル（デプロイ時と同じ値）。"""
+        if self.type == "linear":
+            return self.raw_utilities(rows)
+        return [self.temperature * u for u in self.raw_utilities(rows)]
 
     def win_probs(self, rows) -> list[float]:
         u = self.utilities(rows)

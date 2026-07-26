@@ -92,8 +92,10 @@ function num(v: number | null | undefined, key: string): [number, boolean] {
 export function buildFeatures(race: RaceInput, priors: Priors): number[][] {
   const lanePrior = priors.lane_prior ?? {};
   const racerLane = priors.racer_lane ?? {};
-  const wind = race.windSpeed ?? 0;
-  const wave = race.waveHeight ?? 0;
+  // NaN は ?? をすり抜ける。木の分岐 x<=t は NaN で常に false になり、
+  // 例外を出さず「静かに間違った確率」を返すため、ここで完全に遮断する
+  const wind = Number.isFinite(race.windSpeed as number) ? (race.windSpeed as number) : 0;
+  const wave = Number.isFinite(race.waveHeight as number) ? (race.waveHeight as number) : 0;
 
   // 展示タイムはレース内平均を基準に相対化する
   const exVals: (number | null)[] = race.entries.map((e) => {
@@ -158,6 +160,10 @@ export function buildFeatures(race: RaceInput, priors: Priors): number[][] {
     row[IDX[`motor_x_lane${lane}`]] = (mt - 35) / 20;
     row[IDX[`ex_x_lane${lane}`]] = exRel;
 
+    // 最終防衛線: どの経路から来た NaN/Inf もモデルに渡さない
+    for (let k = 0; k < row.length; k++) {
+      if (!Number.isFinite(row[k])) row[k] = 0;
+    }
     return row;
   });
 }

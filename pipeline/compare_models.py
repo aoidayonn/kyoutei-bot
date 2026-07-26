@@ -21,9 +21,12 @@ import json
 import sys
 from pathlib import Path
 
-# LogLoss はこれ以上改善していないと「誤差の範囲」とみなす
+# 3連単NLL（商品指標）がこれ以上改善していないと「誤差の範囲」とみなす。
+# 週ごとの温度再推定のゆらぎより大きい値にしている
+MIN_NLL3_GAIN = 0.002
+# 後方互換（3連単NLLが無い旧形式ファイル用）
 MIN_LOGLOSS_GAIN = 0.001
-# 1着的中率がこれ以上落ちたら、LogLossが良くても採用しない
+# 1着的中率がこれ以上落ちたら、NLLが良くても採用しない
 MAX_ACCURACY_DROP = 0.005
 
 
@@ -58,11 +61,18 @@ def main():
         print("（初回セットアップ等で意図的に採用したい場合は force を指定）")
         sys.exit(1)
 
-    d_logloss = old["logloss"] - new["logloss"]      # 正なら改善
     d_acc = new["win_accuracy"] - old["win_accuracy"]  # 正なら改善
 
-    print("検証データでの比較（学習に使っていない期間）")
-    print(f"  LogLoss    {old['logloss']:.4f} → {new['logloss']:.4f}  ({d_logloss:+.4f})")
+    use_nll3 = "trifecta_nll" in old and "trifecta_nll" in new
+    print("検証データでの比較（同一期間・温度と段階指数は両モデルとも再推定済み）")
+    if use_nll3:
+        d_main = old["trifecta_nll"] - new["trifecta_nll"]  # 正なら改善
+        print(f"  3連単NLL   {old['trifecta_nll']:.4f} → {new['trifecta_nll']:.4f}  ({d_main:+.4f})")
+        min_gain, label = MIN_NLL3_GAIN, "3連単NLL"
+    else:
+        d_main = old["logloss"] - new["logloss"]
+        min_gain, label = MIN_LOGLOSS_GAIN, "LogLoss"
+    print(f"  1着LogLoss {old['logloss']:.4f} → {new['logloss']:.4f}")
     print(f"  1着的中率  {old['win_accuracy']:.2%} → {new['win_accuracy']:.2%}  ({d_acc:+.2%})")
     print(f"  基準線     1号艇固定 {new['baseline_lane1']:.2%}")
 
@@ -74,8 +84,8 @@ def main():
         print(f"\n✖ 1着的中率が {abs(d_acc):.2%} 落ちています。採用しません。")
         sys.exit(1)
 
-    if d_logloss < MIN_LOGLOSS_GAIN:
-        print("\n― LogLoss の改善が誤差の範囲です。現行モデルのままにします。")
+    if d_main < min_gain:
+        print(f"\n― {label} の改善が誤差の範囲です。現行モデルのままにします。")
         sys.exit(1)
 
     print("\n✔ 改善しているので新しいモデルを採用します。")

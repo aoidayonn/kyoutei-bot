@@ -121,10 +121,12 @@ test("GBMの木トラバーサルが Python 実装と数値一致する", async 
     return;
   }
   const fixture = loadFixture();
-  if (!fixture?.expected_utilities) {
-    t.skip("fixture に expected_utilities がありません。export_fixture.py を実行してください");
-    return;
-  }
+  // GBMモデルなのに期待値が無いのは「パリティ検証が黙って消えている」状態。
+  // skip にすると気づけないので、明示的に失敗させる
+  assert.ok(
+    fixture?.expected_utilities,
+    "fixture に expected_utilities がありません。pipeline/export_fixture.py を再実行してください",
+  );
 
   const { buildFeatures } = await import("../src/features.ts");
   const { evalTrees } = await import("../src/gbm.ts");
@@ -151,4 +153,25 @@ test("GBMの木トラバーサルが Python 実装と数値一致する", async 
     assert.ok(diff < 1e-9,
       `${i + 1}号艇の効用が一致しません: TS=${u} / Python=${fixture.expected_utilities[i]}`);
   });
+});
+
+test("GBMの木トラバーサルがランダム入力でも Python 実装と一致する（葉カバレッジ確保）", async (t) => {
+  const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
+  if ((model.model_type ?? "linear") !== "lightgbm_rank") {
+    t.skip("線形モデルなのでスキップ");
+    return;
+  }
+  const fixture = loadFixture();
+  assert.ok(
+    Array.isArray(fixture?.parity_rows) && fixture.parity_rows.length >= 50,
+    "fixture に parity_rows がありません。pipeline/export_fixture.py を再実行してください",
+  );
+  const { evalTrees } = await import("../src/gbm.ts");
+  for (const [i, row] of fixture.parity_rows.entries()) {
+    const got = evalTrees(model.trees, row.x);
+    assert.ok(
+      Math.abs(got - row.sum) < 1e-8,
+      `parity_rows[${i}] が一致しません: TS=${got} / Python=${row.sum}`,
+    );
+  }
 });

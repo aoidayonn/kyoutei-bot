@@ -119,6 +119,16 @@ jobs:
         working-directory: pipeline
         run: python backtest.py --start ${{ steps.split.outputs.test_start }} | tee ../backtest.log
 
+      # 新モデルも旧モデルと同じ手順（温度・段階指数を同一窓で再推定）で測る。
+      # model.json 内の自己申告メトリクスを使うと、キャリブレーションの
+      # 有無や当たり外れが比較に混ざる（実測で「改善0.036のうち0.025が温度」だった）
+      - name: 新モデルを同じ検証期間で測る
+        working-directory: pipeline
+        run: |
+          python evaluate_model.py --model ../worker/src/model.json \
+                                   --start ${{ steps.split.outputs.test_start }} \
+                                   --out /tmp/new-metrics.json
+
       # ここが「人間の判断」の代わり。
       # 改善していなければ以降のステップを全部飛ばす。
       - name: 現行モデルと比較して採用可否を決める
@@ -127,7 +137,7 @@ jobs:
         run: |
           # パイプ越しに終了コードを見ない。tee が成功を返して判定が壊れるため。
           set +e
-          python compare_models.py /tmp/current-metrics.json ../worker/src/model.json > ../compare.log 2>&1
+          python compare_models.py /tmp/current-metrics.json /tmp/new-metrics.json > ../compare.log 2>&1
           RESULT=$?
           set -e
           cat ../compare.log

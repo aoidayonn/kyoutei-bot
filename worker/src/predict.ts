@@ -56,6 +56,30 @@ const STAGE_EXPONENTS = (MODEL.stage_exponents ?? [1, 1, 1]) as [number, number,
     }
   } else if (MODEL_TYPE === "lightgbm_rank") {
     if (!MODEL.trees?.length) throw new Error("model.json に木がありません");
+    if (typeof MODEL.temperature !== "number" || !Number.isFinite(MODEL.temperature)) {
+      throw new Error("model.json に temperature がありません（確率のスケールが未定義になります）");
+    }
+    const se = MODEL.stage_exponents;
+    if (!se || se.length !== 3 || se.some((x) => !Number.isFinite(x))) {
+      throw new Error("model.json に stage_exponents がありません（穴目が過大評価されます）");
+    }
+    // 木の構造検証。壊れた子インデックスは evalTree の無限ループになるため
+    // 起動時に全ノードを検査する（150本×31ノードなので一瞬）
+    for (const [ti, tr] of MODEL.trees.entries()) {
+      const n = tr.f.length;
+      if (tr.t.length !== n || tr.l.length !== n || tr.r.length !== n) {
+        throw new Error(`木${ti}の配列長が不整合です`);
+      }
+      for (let i = 0; i < n; i++) {
+        for (const c of [tr.l[i], tr.r[i]]) {
+          const okInternal = Number.isInteger(c) && c > i && c < n; // 前方参照のみ
+          const okLeaf = Number.isInteger(c) && c < 0 && ~c < tr.v.length;
+          if (!okInternal && !okLeaf) throw new Error(`木${ti}ノード${i}の子参照が不正です`);
+        }
+        if (!Number.isFinite(tr.t[i])) throw new Error(`木${ti}のしきい値が不正です`);
+      }
+      if (tr.v.some((x) => !Number.isFinite(x))) throw new Error(`木${ti}の葉値が不正です`);
+    }
   } else {
     throw new Error(`未知の model_type: ${MODEL_TYPE}`);
   }

@@ -182,7 +182,10 @@ export function parseBeforeInfo(html: string) {
   const block = wi >= 0 ? stripTags(html.slice(wi, wi + 4000)) : "";
   const pick = (re: RegExp) => {
     const m = block.match(re);
-    return m ? parseFloat(m[1]) : null;
+    if (!m) return null;
+    const v = parseFloat(m[1]);
+    // "．"だけ等にマッチすると parseFloat が NaN を返す
+    return Number.isFinite(v) ? v : null;
   };
 
   return {

@@ -1,8 +1,10 @@
 """LightGBM (lambdarank) の学習と model.json の書き出し。
 
 線形モデル(train.py)との違い:
-  - レース単位のランキング損失で学習する（「どの艇が1着か」の相対比較）。
-    バイナリ分類より一貫して良かった（検証 LogLoss 1.221 → 1.195）。
+  - レース単位のランキング損失で学習する。ラベルは 1着=3, 2着=2, 3着=1。
+    「1着のみ=1」で学習すると2・3着の並びの情報が捨てられ、商品指標である
+    3連単NLLが線形モデルより悪化した（実測 3.8713 vs 3.8578）。
+    3着までラベルに入れると全指標で最良になる（3連単NLL 3.8531）。
   - 出力スコアはそのままでは確率ではないため、温度 t を推定して
     u = t * score を Plackett-Luce の効用として使う。
 
@@ -42,9 +44,9 @@ PARAMS = dict(
     verbose=-1,
     num_threads=4,
     seed=7,
-    label_gain=[0, 1],
+    # label_gain は既定（2^label - 1）。ラベル3値なので [0,1,3,7] 相当
 )
-NUM_ROUNDS = 150  # 150本×31葉 ≈ gzip 0.3MB。250本×63葉との差は誤差程度だった
+NUM_ROUNDS = 150  # 150本×31葉 ≈ gzip 0.13MB。250本×63葉との差は誤差程度だった
 
 
 def build(races, priors):
@@ -53,10 +55,14 @@ def build(races, priors):
 
 
 def flatten(X, order):
+    """ラベル: 1着=3, 2着=2, 3着=1, 他=0（2・3着の情報を捨てない）。"""
     n = X.shape[0]
     Xf = X.reshape(n * 6, X.shape[2])
     y = np.zeros(n * 6)
-    y[np.arange(n) * 6 + order[:, 0]] = 1
+    base = np.arange(n) * 6
+    y[base + order[:, 0]] = 3
+    y[base + order[:, 1]] = 2
+    y[base + order[:, 2]] = 1
     return Xf, y
 
 
@@ -80,12 +86,14 @@ def winner_logloss(V, order):
 
 
 def calibrate_temperature(S, order):
-    """u = t * score の t を、1着のLogLoss最小で選ぶ（黄金分割まがいのグリッド）。"""
+    """u = t * score の t を、1着のLogLoss最小で選ぶ。"""
     best_t, best_ll = 1.0, float("inf")
-    for t in np.arange(0.5, 2.01, 0.05):
+    for t in np.arange(0.4, 2.51, 0.05):
         ll = winner_logloss(t * S, order)
         if ll < best_ll:
             best_t, best_ll = float(t), ll
+    if best_t <= 0.45 or best_t >= 2.45:
+        print(f"⚠️  温度がグリッド端に張り付いています (t={best_t})。スコアのスケールを確認すること")
     for t in np.arange(best_t - 0.05, best_t + 0.051, 0.01):
         ll = winner_logloss(t * S, order)
         if ll < best_ll:
@@ -132,26 +140,38 @@ def main():
     # 学習特徴量は各レースより前の実績のみ（リーク防止）
     T.annotate_racer_lane_expanding(train_races)
 
-    # ---- 温度・段階指数のキャリブレーション用に末尾3か月を val に ----
-    val_start = (dt.date.fromisoformat(a.train_end) - dt.timedelta(days=90)).isoformat()
-    sub = [r for r in train_races if r["date"] < val_start]
-    val = [r for r in train_races if r["date"] >= val_start]
-    print(f"学習 {len(train_races)} レース（うちキャリブレーション用 val {len(val)}）")
+    # ---- 行列は一度だけ作り、日付でスライスする ----
+    # 以前は sub/val/full を別々に build しており、ピークメモリが約2.8倍
+    # （実データで3.4GB）になって小さいマシンではOOM killされた。
+    # races は日付順なので、行列も日付順に並ぶ。
+    train_races.sort(key=lambda r: (r["date"], r["jcd"], r["rno"]))
+    Xtr, otr = build(train_races, priors)
 
-    Xs, os_ = build(sub, priors)
-    Xv, ov = build(val, priors)
+    # ---- 温度・段階指数のキャリブレーション用に末尾3か月を val に ----
+    # 注意: lane_prior は全学習期間（valを含む）から作られている。
+    # 場×枠単位の統計でval寄与は8%程度のため実害は無視できるが、
+    # 「valに一切触れていない」わけではない。
+    val_start = (dt.date.fromisoformat(a.train_end) - dt.timedelta(days=90)).isoformat()
+    K = sum(1 for r in train_races if r["date"] < val_start)
+    n_val = len(train_races) - K
+    print(f"学習 {len(train_races)} レース（うちキャリブレーション用 val {n_val}）")
+    if K < 5000 or n_val < 1000:
+        raise SystemExit(
+            f"キャリブレーション分割が偏っています（sub {K} / val {n_val}）。"
+            "学習期間を延ばすか val 幅を調整してください"
+        )
 
     print("補助モデルを学習（キャリブレーション用）...")
-    aux = fit_gbm(Xs, os_)
-    Sv = scores_matrix(aux, Xv)
-    temp, val_ll = calibrate_temperature(Sv, ov)
+    aux = fit_gbm(Xtr[:K], otr[:K])
+    Sv = scores_matrix(aux, Xtr[K:])
+    temp, val_ll = calibrate_temperature(Sv, otr[K:])
     print(f"  温度 t = {temp}（val LogLoss {val_ll:.4f}）")
 
-    exponents = T.fit_stage_exponents_from_V(temp * Sv, ov)
+    exponents = T.fit_stage_exponents_from_V(temp * Sv, otr[K:])
+    del aux, Sv
 
     # ---- 本番モデルは全学習期間で ----
     print("本番モデルを学習...")
-    Xtr, otr = build(train_races, priors)
     booster = fit_gbm(Xtr, otr)
 
     metrics = {"train": evaluate(temp * scores_matrix(booster, Xtr), otr, "train")}
@@ -162,11 +182,14 @@ def main():
     # ---- 純Python推論器とのパリティ検証（TS移植の正解仕様） ----
     trees = model_io.compact_trees(booster.dump_model())
     rng = np.random.default_rng(0)
-    sample = Xtr[rng.integers(0, Xtr.shape[0], 200)].reshape(-1, Xtr.shape[2])
+    idx = rng.integers(0, Xtr.shape[0], 300)
+    sample = Xtr[idx].reshape(-1, Xtr.shape[2])
     expect = booster.predict(sample)
     got = np.array([model_io.eval_trees(trees, row) for row in sample])
     err = float(np.abs(expect - got).max())
-    assert err < 1e-6, f"純Python推論器がlightgbmと一致しません (max err {err})"
+    # assert は python -O で消えるため使わない
+    if err >= 1e-9:
+        raise SystemExit(f"純Python推論器がlightgbmと一致しません (max err {err})")
     print(f"木の変換パリティ OK（{len(trees)}本, max err {err:.2e}）")
 
     model = {
