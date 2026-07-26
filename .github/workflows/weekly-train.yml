@@ -91,11 +91,14 @@ jobs:
       - name: 現行モデルを退避
         run: cp worker/src/model.json /tmp/model-current.json
 
-      - name: 学習期間を決める（直近3か月を検証用に残す）
+      - name: 学習期間を決める（直近1か月を検証用に残す）
         id: split
         run: |
+          # 検証窓は以前3ヶ月だったが、その分学習データが常に3ヶ月古くなる。
+          # 1ヶ月（約4,500レース）でもゲートの判定には足り、
+          # 学習が2ヶ月ぶん新しくなる方が得（ドリフト追従は実測で効いている）
           END="${{ github.event.inputs.train_end }}"
-          [ -z "$END" ] && END=$(date -u -d '3 months ago' +%F)
+          [ -z "$END" ] && END=$(date -u -d '1 month ago' +%F)
           echo "train_end=$END" >> $GITHUB_OUTPUT
           echo "test_start=$(date -u -d "$END +1 day" +%F)" >> $GITHUB_OUTPUT
           # 学習は直近36ヶ月に限定する。実測した学習曲線は

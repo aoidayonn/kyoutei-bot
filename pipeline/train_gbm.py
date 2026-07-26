@@ -53,6 +53,10 @@ PARAMS = dict(
 )
 NUM_ROUNDS = 150  # 150本×31葉 ≈ gzip 0.13MB。250本×63葉との差は誤差程度だった
 K_FOLDS = 5       # out-of-fold較正の分割数
+# 鮮度重み: 半減期365日の指数減衰。36ヶ月を平坦に扱うより直近を重くする方が
+# 分布ドリフト（モーター周期・選手の変化）に追従できる。
+# 実測: 3連単NLL -0.0029（窓1）/ -0.0020（窓2）。180日・730日より365日が最良
+HALF_LIFE_DAYS = 365
 
 
 def build(races, priors):
@@ -72,10 +76,14 @@ def flatten(X, order):
     return Xf, y
 
 
-def fit_gbm(X, order):
+def fit_gbm(X, order, age_days=None):
     Xf, y = flatten(X, order)
     rounds = 30 if os.environ.get("KYOTEI_SMOKE") == "1" else NUM_ROUNDS
-    return lgb.train(PARAMS, lgb.Dataset(Xf, y, group=[6] * X.shape[0]),
+    kw = {}
+    if age_days is not None:
+        # レース単位の重みを6艇の行へ展開
+        kw["weight"] = np.repeat(0.5 ** (np.asarray(age_days) / HALF_LIFE_DAYS), 6)
+    return lgb.train(PARAMS, lgb.Dataset(Xf, y, group=[6] * X.shape[0], **kw),
                      num_boost_round=rounds)
 
 
@@ -153,6 +161,10 @@ def main():
     # races は日付順なので、行列も日付順に並ぶ。
     train_races.sort(key=lambda r: (r["date"], r["jcd"], r["rno"]))
     Xtr, otr = build(train_races, priors)
+    # 鮮度重み用: 学習最終日から見た経過日数
+    end_ord = dt.date.fromisoformat(a.train_end).toordinal()
+    age_days = np.array([end_ord - dt.date.fromisoformat(r["date"]).toordinal()
+                         for r in train_races], dtype=np.float64)
 
     # ---- キャリブレーションは out-of-fold 方式 ----
     # 以前は「末尾3ヶ月をvalに、その前で補助モデルを学習」して較正していたが、
@@ -173,7 +185,7 @@ def main():
     for i, fold in enumerate(fold_bounds):
         mask = np.ones(n_races, dtype=bool)
         mask[fold] = False
-        bst_f = fit_gbm(Xtr[mask], otr[mask])
+        bst_f = fit_gbm(Xtr[mask], otr[mask], age_days[mask])
         S_oof[fold] = scores_matrix(bst_f, Xtr[fold])
         print(f"  fold {i+1}/{K_FOLDS} 完了", flush=True)
     del bst_f
@@ -189,7 +201,7 @@ def main():
 
     # ---- 本番モデルは全学習期間で ----
     print("本番モデルを学習...")
-    booster = fit_gbm(Xtr, otr)
+    booster = fit_gbm(Xtr, otr, age_days)
 
     metrics = {"train": evaluate(temp * scores_matrix(booster, Xtr), otr, "train")}
     if len(test_races) > 100:
@@ -217,6 +229,7 @@ def main():
         "n_train_races": len(train_races),
         "params": {k: v for k, v in PARAMS.items() if k != "verbose"},
         "num_rounds": NUM_ROUNDS,
+        "half_life_days": HALF_LIFE_DAYS,
         "temperature": temp,
         "feature_names": F.FEATURE_NAMES,
         "lane_prior": {k: round(v, 6) for k, v in lane_prior.items()},
