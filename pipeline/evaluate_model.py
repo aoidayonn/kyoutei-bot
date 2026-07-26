@@ -27,6 +27,7 @@ import numpy as np
 
 import train as T
 import model_io
+import stage_calib
 
 DB = Path(__file__).resolve().parent.parent / "data" / "kyotei.db"
 
@@ -77,22 +78,40 @@ def calibrate_temperature(S, order):
 
 
 def symmetric_metrics(m: "model_io.Model", races):
+    """評価窓を前半（較正）／後半（採点）に割って測る。
+
+    較正パラメータ（温度・段階指数・枠ペア相互作用）は前半だけで推定し、
+    後半は一度も見ずに採点する。枠ペア較正はパラメータが200個以上あり、
+    採点区間で当てると「増やした分だけ良く見える」だけになるため。
+    新旧どちらのモデルもこの同一手順を通るので比較は公平。
+    """
     X, order, _ = T.build_matrices(races, m.priors)
     S = np.array([m.raw_utilities(rows) for rows in X])
+    Xa = np.asarray(X, dtype=float)
 
-    t, ll1 = calibrate_temperature(S, order)
-    exps = T.fit_stage_exponents_from_V(t * S, order, verbose=False)
-    V = t * S
+    n = S.shape[0]
+    half = n // 2
+    cal, sco = slice(0, half), slice(half, n)
 
+    t, _ = calibrate_temperature(S[cal], order[cal])
+    exps = T.fit_stage_exponents_from_V(t * S[cal], order[cal], verbose=False)
+    calib = stage_calib.fit(t * S[cal], Xa[cal], order[cal], verbose=False)
+
+    V = t * S[sco]
+    osc = order[sco]
     mx = V.max(axis=1, keepdims=True)
     prob = np.exp(V - mx)
     prob /= prob.sum(axis=1, keepdims=True)
+    idx = np.arange(V.shape[0])
     return dict(
         n=int(V.shape[0]),
-        win_accuracy=float((prob.argmax(axis=1) == order[:, 0]).mean()),
-        baseline_lane1=float((order[:, 0] == 0).mean()),
-        logloss=ll1,
-        trifecta_nll=nll3(V, order, exps),
+        win_accuracy=float((prob.argmax(axis=1) == osc[:, 0]).mean()),
+        baseline_lane1=float((osc[:, 0] == 0).mean()),
+        logloss=float(-np.log(np.clip(prob[idx, osc[:, 0]], 1e-12, None)).mean()),
+        # 商品指標。較正あり（本番と同じ展開）を主指標にする。
+        trifecta_nll=stage_calib.trifecta_nll(V, Xa[sco], osc, calib),
+        # 参考: 枠ペアを使わない旧方式でも測っておく
+        trifecta_nll_scalar=nll3(V, osc, exps),
         refit_temperature=t,
         refit_exponents=exps,
     )

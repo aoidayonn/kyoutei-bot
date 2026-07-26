@@ -91,6 +91,8 @@ class Model:
             "racer_lane": data.get("racer_lane", {}),
         }
         self.stage_exponents = tuple(data.get("stage_exponents", [1.0, 1.0, 1.0]))
+        # 2・3着の枠ペア相互作用（無ければ従来のスカラー指数だけ）。
+        self.stage_calib = data.get("stage_calib")
         if self.type == "linear":
             self.w = data["weights"]
         elif self.type == "lightgbm_rank":

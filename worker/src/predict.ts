@@ -14,6 +14,7 @@ import { evalTrees, type Tree } from "./gbm";
 import {
   scoresFromUtilities,
   trifectaProbabilities,
+  type StageCalib,
   winProbabilities,
 } from "./plackettLuce";
 import { buildPicks, selectPicks, DEFAULT_OPTIONS, type Pick } from "./selection";
@@ -31,6 +32,7 @@ type ModelFile = {
   lane_prior: Record<string, number>;
   racer_lane?: Record<string, number>;
   stage_exponents?: [number, number, number];
+  stage_calib?: StageCalib;
 };
 const MODEL = model as unknown as ModelFile;
 const MODEL_TYPE = MODEL.model_type ?? "linear";
@@ -39,6 +41,8 @@ const PRIORS: Priors = {
   racer_lane: MODEL.racer_lane ?? {},
 };
 const STAGE_EXPONENTS = (MODEL.stage_exponents ?? [1, 1, 1]) as [number, number, number];
+// 2・3着の枠ペア相互作用。無ければ従来のスカラー指数だけで展開する（後方互換）。
+const STAGE_CALIB = MODEL.stage_calib;
 
 // モデルと実装の不整合はここで止める。
 // 特徴量の数や並びがズレていても推論は例外を出さず「静かに誤った確率」を
@@ -62,6 +66,26 @@ const STAGE_EXPONENTS = (MODEL.stage_exponents ?? [1, 1, 1]) as [number, number,
     const se = MODEL.stage_exponents;
     if (!se || se.length !== 3 || se.some((x) => !Number.isFinite(x))) {
       throw new Error("model.json に stage_exponents がありません（穴目が過大評価されます）");
+    }
+    // 枠ペア較正は任意だが、あるなら形が正しいことを起動時に確かめる。
+    // 行列の形が崩れていると undefined が数値演算に流れ込み、
+    // 例外ではなく NaN 確率として静かに広がる。
+    if (MODEL.stage_calib) {
+      for (const key of ["second", "third"] as const) {
+        const b = MODEL.stage_calib[key];
+        if (!b) throw new Error(`stage_calib.${key} がありません`);
+        if (!Number.isFinite(b.exponent)) throw new Error(`stage_calib.${key}.exponent が不正です`);
+        for (const p of [b.pair, b.pair2]) {
+          if (p === undefined) continue;
+          if (p.length !== 6 || p.some((row) => row.length !== 6 || row.some((x) => !Number.isFinite(x)))) {
+            throw new Error(`stage_calib.${key} の枠ペア行列が 6x6 の有限値ではありません`);
+          }
+        }
+        if (b.weights && (b.weights.length !== FEATURE_NAMES.length
+                          || b.weights.some((x) => !Number.isFinite(x)))) {
+          throw new Error(`stage_calib.${key}.weights の長さが特徴量の数と違います`);
+        }
+      }
     }
     // 木の構造検証。壊れた子インデックスは evalTree の無限ループになるため
     // 起動時に全ノードを検査する（150本×31ノードなので一瞬）
@@ -153,7 +177,7 @@ export async function predict(
   const utilities = computeUtilities(X);
   const scores = scoresFromUtilities(utilities);
   const winProbs = winProbabilities(scores);
-  const combos = trifectaProbabilities(utilities, STAGE_EXPONENTS);
+  const combos = trifectaProbabilities(utilities, STAGE_EXPONENTS, STAGE_CALIB, X);
 
   const withEv = buildPicks(combos, odds, DEFAULT_OPTIONS.modelWeight);
   const byProb = withEv.slice(0, DEFAULT_OPTIONS.maxPicks);

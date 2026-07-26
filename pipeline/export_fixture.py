@@ -53,6 +53,7 @@ def main():
     # 本番モデルがGBMなら、同じ入力に対する期待効用も出力する。
     # TS側の木トラバーサル（gbm.ts）がPython実装と一致することをテストで固定する。
     expected_utilities = None
+    expected_trifecta = None
     parity_rows = None
     model_path = OUT.parent.parent / "src" / "model.json"
     if model_path.exists():
@@ -62,6 +63,16 @@ def main():
         m = model_io.load_model(model_path)
         model_rows = F.build_features(SAMPLE_RACE, m.priors)
         expected_utilities = [round(u, 10) for u in m.utilities(model_rows)]
+
+        # 120通りの展開もPython側を正解として固定する。
+        # 枠ペア較正が入って以降、効用が一致していても展開だけズレる余地が
+        # できたため（TS側が calib を渡し忘れる等）、ここで押さえる。
+        import plackett_luce as PL
+        expected_trifecta = {
+            k: round(v, 12) for k, v in
+            PL.trifecta_probabilities(m.utilities(model_rows), m.stage_exponents,
+                                      m.stage_calib, model_rows).items()
+        }
 
         if m.type == "lightgbm_rank":
             # 葉のカバレッジを上げるため、決定的な擬似ランダム行でも
@@ -95,6 +106,7 @@ def main():
                 "priors": SAMPLE_PRIORS,
                 "expected": [[round(x, 10) for x in row] for row in rows],
                 "expected_utilities": expected_utilities,
+                "expected_trifecta": expected_trifecta,
                 "parity_rows": parity_rows,
             },
             ensure_ascii=False,

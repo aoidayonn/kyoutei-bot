@@ -32,6 +32,7 @@ import lightgbm as lgb
 import features as F
 import train as T
 import model_io
+import stage_calib as stage_calib_mod
 
 DB = Path(__file__).resolve().parent.parent / "data" / "kyotei.db"
 
@@ -168,6 +169,14 @@ def main():
     print(f"  温度 t = {temp}（val LogLoss {val_ll:.4f}）")
 
     exponents = T.fit_stage_exponents_from_V(temp * Sv, otr[K:])
+
+    # 2・3着の条件付き分布を較正する。
+    # ここで使う val は本番モデルの学習にも使われるが、A/B/C が拾うのは
+    # 「1着が誰かで2着の並びが変わる」というレース力学であって
+    # モデルのスコアそのものではないため、補助モデルのスコアで推定して流用できる。
+    # テスト期間には一切触れていない。
+    print("2・3着の条件付き分布を較正...")
+    stage_calib = stage_calib_mod.fit(temp * Sv, Xtr[K:], otr[K:])
     del aux, Sv
 
     # ---- 本番モデルは全学習期間で ----
@@ -205,6 +214,7 @@ def main():
         "lane_prior": {k: round(v, 6) for k, v in lane_prior.items()},
         "racer_lane": racer_lane,
         "stage_exponents": exponents,
+        "stage_calib": stage_calib,
         "metrics": metrics,
         "trees": trees,
     }

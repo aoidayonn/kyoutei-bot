@@ -1,44 +1,129 @@
 """Plackett-Luce モデルによる3連単120通りの確率展開。
 
-各艇の「強さスコア」s_i（= exp(効用)）から、着順全体の確率を整合的に導く:
+各艇の効用 v_i から、着順全体の確率を整合的に導く:
 
-    P(i→j→k) = s_i/Σs · s_j/(Σs−s_i) · s_k/(Σs−s_i−s_j)
+    P(i→j→k) = P(1着=i) · P(2着=j | 1着=i) · P(3着=k | 1着=i, 2着=j)
 
 120通りの合計はちょうど 1 になる。
-「1-2-3 が常に本命」ではなく、s の大小関係がレースごとに変わるので
+「1-2-3 が常に本命」ではなく、v の大小関係がレースごとに変わるので
 弱いイン・強いアウトのレースでは自然に別の組み合わせが上位に来る。
+
+素のPLは各段階を exp(v_j) に比例させるが、それだと
+**1着が誰であっても2着の相対順位は同じ**という誤った仮定になる。
+実データでは外枠がまくると他の外枠が繰り上がる（stage_calib.py 参照）。
+そこで較正パラメータがある場合は条件付きスコアに枠ペアの項を足す:
+
+    2着: a2 * v_j + A[1着の枠][j]                  + w2 . x_j
+    3着: a3 * v_k + B[1着の枠][k] + C[2着の枠][k]   + w3 . x_k
+
+★ worker/src/plackettLuce.ts と完全に一致させること。
+   片方だけ直すと予想が静かに壊れる。npm test で数値一致を強制している。
 """
 from __future__ import annotations
 
 import math
-from itertools import permutations
+
+LANES = 6
 
 
-def trifecta_probabilities(utilities, exponents=(1.0, 1.0, 1.0)) -> dict[str, float]:
+def _dot(w, x) -> float:
+    s = 0.0
+    for i in range(len(w)):
+        s += w[i] * x[i]
+    return s
+
+
+def _stage_base(v, m, block, features):
+    """a * (v_j - m) + w . x_j を6艇分。"""
+    a = float(block.get("exponent", 1.0))
+    w = block.get("weights")
+    out = []
+    for j in range(LANES):
+        b = a * (v[j] - m)
+        if w and features is not None:
+            b += _dot(w, features[j])
+        out.append(b)
+    return out
+
+
+def _cond_probs(base, extras, excluded):
+    """base[j] + Σextras[j] を、excluded を除いた集合でソフトマックス。"""
+    sc = [0.0] * LANES
+    mx = -math.inf
+    for j in range(LANES):
+        if j in excluded:
+            continue
+        s = base[j]
+        for e in extras:
+            s += e[j]
+        sc[j] = s
+        if s > mx:
+            mx = s
+    tot = 0.0
+    ex = [0.0] * LANES
+    for j in range(LANES):
+        if j in excluded:
+            continue
+        e = math.exp(sc[j] - mx)
+        ex[j] = e
+        tot += e
+    if tot <= 0:
+        return None
+    return [e / tot for e in ex]
+
+
+def trifecta_probabilities(utilities, exponents=(1.0, 1.0, 1.0),
+                           calib=None, features=None) -> dict[str, float]:
     """効用ベクトル（長さ6）から120通りの3連単確率を返す。
 
-    exponents = (1, α, β) は各着順での「強さの効き方」。
-    素のPLは (1,1,1) だが、実際は2着以降ほど差がつきにくいので
-    学習で推定した α, β を使うと確率が現実に近づく。
+    calib があれば枠ペア相互作用つきの条件付きモデルを使う。
+    無ければ従来どおり exponents=(1, α, β) のスカラー指数のみ。
     """
     v = [float(x) for x in utilities]
     m = max(v)
-    p1, p2, p3 = exponents
-    s1 = [math.exp(p1 * (x - m)) for x in v]
-    s2 = [math.exp(p2 * (x - m)) for x in v]
-    s3 = [math.exp(p3 * (x - m)) for x in v]
-
-    t1 = sum(s1)
-    if t1 <= 0:
+    if not math.isfinite(m):
         return {}
 
-    out = {}
-    for i, j, k in permutations(range(6), 3):
-        d2 = sum(s2[x] for x in range(6) if x != i)
-        d3 = sum(s3[x] for x in range(6) if x != i and x != j)
-        if d2 <= 0 or d3 <= 0:
+    if calib:
+        b2 = calib["second"]
+        b3 = calib["third"]
+        e1 = 1.0
+        base2 = _stage_base(v, m, b2, features)
+        base3 = _stage_base(v, m, b3, features)
+        A = b2.get("pair")
+        B = b3.get("pair")
+        C = b3.get("pair2")
+    else:
+        e1, a2, a3 = exponents
+        base2 = [a2 * (x - m) for x in v]
+        base3 = [a3 * (x - m) for x in v]
+        A = B = C = None
+
+    p1 = _cond_probs([e1 * (x - m) for x in v], [], set())
+    if p1 is None:
+        return {}
+
+    out: dict[str, float] = {}
+    for i in range(LANES):
+        extras2 = [A[i]] if A else []
+        p2 = _cond_probs(base2, extras2, {i})
+        if p2 is None:
             continue
-        out[f"{i+1}-{j+1}-{k+1}"] = (s1[i] / t1) * (s2[j] / d2) * (s3[k] / d3)
+        for j in range(LANES):
+            if j == i:
+                continue
+            extras3 = []
+            if B:
+                extras3.append(B[i])
+            if C:
+                extras3.append(C[j])
+            p3 = _cond_probs(base3, extras3, {i, j})
+            if p3 is None:
+                continue
+            for k in range(LANES):
+                if k == i or k == j:
+                    continue
+                out[f"{i+1}-{j+1}-{k+1}"] = p1[i] * p2[j] * p3[k]
     return out
 
 

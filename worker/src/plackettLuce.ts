@@ -1,16 +1,45 @@
 /**
  * Plackett-Luce モデルによる3連単120通りの確率展開。
  *
- *   P(i→j→k) = s_i/Σs · s_j/(Σs−s_i) · s_k/(Σs−s_i−s_j)
+ *   P(i→j→k) = P(1着=i) · P(2着=j | 1着=i) · P(3着=k | 1着=i, 2着=j)
  *
  * 120通りの合計はちょうど 1 になる。
- * 「1-2-3 が常に本命」ではなく、各艇のスコア s の大小でレースごとに変わる。
+ * 「1-2-3 が常に本命」ではなく、各艇の効用 v の大小でレースごとに変わる。
+ *
+ * 素のPLは各段階を exp(v_j) に比例させるが、それだと
+ * **1着が誰であっても2着の相対順位は同じ**という誤った仮定になる。
+ * 実データでは外枠がまくると他の外枠が繰り上がる:
+ *
+ *     1着=1枠のとき 2着が5枠 12.1% / 6枠  7.3%
+ *     1着=4枠のとき 2着が5枠 20.0% / 6枠 13.1%
+ *
+ * そこで較正パラメータがあれば条件付きスコアに枠ペアの項を足す:
+ *
+ *     2着: a2 * v_j + A[1着の枠][j]                  + w2 · x_j
+ *     3着: a3 * v_k + B[1着の枠][k] + C[2着の枠][k]   + w3 · x_k
+ *
+ * ★ pipeline/plackett_luce.py と完全に一致させること。
+ *   片方だけ直すと予想が静かに壊れる。npm test で数値一致を強制している。
  */
 
 export interface Combo {
   combo: string; // "1-2-3"
   prob: number;
 }
+
+export interface StageBlock {
+  exponent: number;
+  pair?: number[][];   // [条件の枠][対象の枠]
+  pair2?: number[][];  // 3着のみ: [2着の枠][対象の枠]
+  weights?: number[];  // 特徴量の線形補正（標準化は畳み込み済み）
+}
+
+export interface StageCalib {
+  second: StageBlock;
+  third: StageBlock;
+}
+
+const LANES = 6;
 
 /** 効用ベクトル（長さ6）からスコア s_i = exp(v_i) を作る。数値安定のため最大値を引く。 */
 export function scoresFromUtilities(v: number[]): number[] {
@@ -25,48 +54,108 @@ export function winProbabilities(scores: number[]): number[] {
   return scores.map((s) => s / total);
 }
 
+function dot(w: number[], x: number[]): number {
+  let s = 0;
+  for (let i = 0; i < w.length; i++) s += w[i] * x[i];
+  return s;
+}
+
+function stageBase(
+  v: number[], m: number, block: StageBlock, features?: number[][],
+): number[] {
+  const a = block.exponent ?? 1;
+  const w = block.weights;
+  const out: number[] = [];
+  for (let j = 0; j < LANES; j++) {
+    let b = a * (v[j] - m);
+    if (w && features) b += dot(w, features[j]);
+    out.push(b);
+  }
+  return out;
+}
+
+/** base[j] + Σextras[j] を、excluded を除いた集合でソフトマックス。 */
+function condProbs(
+  base: number[], extras: number[][], excluded: number[],
+): number[] | null {
+  const sc = new Array(LANES).fill(0);
+  let mx = -Infinity;
+  for (let j = 0; j < LANES; j++) {
+    if (excluded.includes(j)) continue;
+    let s = base[j];
+    for (const e of extras) s += e[j];
+    sc[j] = s;
+    if (s > mx) mx = s;
+  }
+  if (!Number.isFinite(mx)) return null;
+  const ex = new Array(LANES).fill(0);
+  let tot = 0;
+  for (let j = 0; j < LANES; j++) {
+    if (excluded.includes(j)) continue;
+    const e = Math.exp(sc[j] - mx);
+    ex[j] = e;
+    tot += e;
+  }
+  if (!(tot > 0)) return null;
+  return ex.map((e) => e / tot);
+}
+
 /**
  * 120通りすべての3連単確率。確率降順でソートして返す。
  *
- * exponents = [1, α, β] は各着順での「強さの効き方」。
- * 素の Plackett-Luce は全段階で 1 を仮定するが、実際のボートレースは
- * 1着が決まった後の2・3着争いの方が横並びに近い（学習では α≈0.87, β≈0.62）。
- * ここを 1 のままにすると穴目の確率が過大評価され、
- * 「期待値が高い買い目」が万券ばかりになってしまう。
+ * calib があれば枠ペア相互作用つきの条件付きモデルを使う。
+ * 無ければ従来どおり exponents=[1, α, β] のスカラー指数のみ。
  */
 export function trifectaProbabilities(
   utilities: number[],
   exponents: [number, number, number] = [1, 1, 1],
+  calib?: StageCalib,
+  features?: number[][],
 ): Combo[] {
-  const m = Math.max(...utilities);
+  const v = utilities.map(Number);
+  const m = Math.max(...v);
   // 特徴量やモデルの不整合で NaN が混ざった場合、NaN の確率を返すより
   // 空を返して「取得失敗」として扱わせる方が安全側。
   if (!Number.isFinite(m)) return [];
-  const [e1, e2, e3] = exponents;
-  const s1 = utilities.map((v) => Math.exp(e1 * (v - m)));
-  const s2 = utilities.map((v) => Math.exp(e2 * (v - m)));
-  const s3 = utilities.map((v) => Math.exp(e3 * (v - m)));
 
-  const t1 = s1.reduce((a, b) => a + b, 0);
+  let base2: number[];
+  let base3: number[];
+  let A: number[][] | undefined;
+  let B: number[][] | undefined;
+  let C: number[][] | undefined;
+  const e1 = 1;
+
+  if (calib) {
+    base2 = stageBase(v, m, calib.second, features);
+    base3 = stageBase(v, m, calib.third, features);
+    A = calib.second.pair;
+    B = calib.third.pair;
+    C = calib.third.pair2;
+  } else {
+    const [, a2, a3] = exponents;
+    base2 = v.map((x) => a2 * (x - m));
+    base3 = v.map((x) => a3 * (x - m));
+  }
+
+  const p1 = condProbs(v.map((x) => e1 * (x - m)), [], []);
+  if (!p1) return [];
+
   const out: Combo[] = [];
-  if (t1 <= 0) return out;
-
-  for (let i = 0; i < 6; i++) {
-    let d2 = 0;
-    for (let x = 0; x < 6; x++) if (x !== i) d2 += s2[x];
-    if (d2 <= 0) continue;
-
-    for (let j = 0; j < 6; j++) {
+  for (let i = 0; i < LANES; i++) {
+    const p2 = condProbs(base2, A ? [A[i]] : [], [i]);
+    if (!p2) continue;
+    for (let j = 0; j < LANES; j++) {
       if (j === i) continue;
-      let d3 = 0;
-      for (let x = 0; x < 6; x++) if (x !== i && x !== j) d3 += s3[x];
-      if (d3 <= 0) continue;
-
-      for (let k = 0; k < 6; k++) {
+      const extras3: number[][] = [];
+      if (B) extras3.push(B[i]);
+      if (C) extras3.push(C[j]);
+      const p3 = condProbs(base3, extras3, [i, j]);
+      if (!p3) continue;
+      for (let k = 0; k < LANES; k++) {
         if (k === i || k === j) continue;
         out.push({
           combo: `${i + 1}-${j + 1}-${k + 1}`,
-          prob: (s1[i] / t1) * (s2[j] / d2) * (s3[k] / d3),
+          prob: p1[i] * p2[j] * p3[k],
         });
       }
     }

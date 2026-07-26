@@ -20,6 +20,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const fx = (n) => readFileSync(join(here, "fixtures", n), "utf-8");
 const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
 const STAGE = model.stage_exponents ?? [1, 1, 1];
+// 本番(predict.ts)は枠ペア較正も渡す。ここで渡し忘れると
+// 「テストは通るが本番とは違う展開」を検証することになる。
+const CALIB = model.stage_calib;
 
 /** モデル形式を吸収して効用を返す（predict.ts と同じ計算） */
 function utilitiesOf(X) {
@@ -60,7 +63,7 @@ function buildPrediction() {
   const utilities = utilitiesOf(X);
   return {
     winProbs: winProbabilities(scoresFromUtilities(utilities)),
-    combos: trifectaProbabilities(utilities, STAGE),
+    combos: trifectaProbabilities(utilities, STAGE, CALIB, X),
     odds,
   };
 }
@@ -154,7 +157,7 @@ test("弱いイン・強いアウトのレースでは本命が1-2-3にならな
   };
   const X = buildFeatures(race, priors);
   const u = utilitiesOf(X);
-  const combos = trifectaProbabilities(u, STAGE);
+  const combos = trifectaProbabilities(u, STAGE, CALIB, X);
 
   assert.notEqual(
     combos[0].combo,

@@ -155,6 +155,52 @@ test("GBMの木トラバーサルが Python 実装と数値一致する", async 
   });
 });
 
+test("120通りの展開が Python 実装と数値一致する", async (t) => {
+  const fixture = loadFixture();
+  const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
+  // 効用が一致していても展開だけズレる余地がある（calib の渡し忘れ等）ので
+  // ここは skip にせず明示的に落とす
+  assert.ok(
+    fixture?.expected_trifecta,
+    "fixture に expected_trifecta がありません。pipeline/export_fixture.py を再実行してください",
+  );
+
+  const { buildFeatures } = await import("../src/features.ts");
+  const { trifectaProbabilities } = await import("../src/plackettLuce.ts");
+
+  const race = {
+    jcd: fixture.race.jcd,
+    windSpeed: fixture.race.wind_speed,
+    waveHeight: fixture.race.wave_height,
+    entries: fixture.race.entries.map((e) => ({
+      lane: e.lane, racerId: e.racer_id, racerClass: e.racer_class,
+      winRateNational: e.win_rate_national, top2National: e.top2_national,
+      winRateLocal: e.win_rate_local, top2Local: e.top2_local,
+      motorTop2: e.motor_top2, boatTop2: e.boat_top2,
+      age: e.age, weight: e.weight, exTime: e.ex_time,
+    })),
+  };
+  const priors = { lane_prior: model.lane_prior, racer_lane: model.racer_lane ?? {} };
+  const X = buildFeatures(race, priors);
+  const combos = trifectaProbabilities(
+    fixture.expected_utilities, model.stage_exponents ?? [1, 1, 1],
+    model.stage_calib, X,
+  );
+
+  assert.equal(combos.length, 120, "120通り揃っていません");
+  const sum = combos.reduce((a, c) => a + c.prob, 0);
+  assert.ok(Math.abs(sum - 1) < 1e-9, `確率の合計が1になりません: ${sum}`);
+
+  for (const c of combos) {
+    const want = fixture.expected_trifecta[c.combo];
+    assert.ok(want !== undefined, `${c.combo} が Python 側にありません`);
+    assert.ok(
+      Math.abs(c.prob - want) < 1e-10,
+      `${c.combo} が一致しません: TS=${c.prob} / Python=${want}`,
+    );
+  }
+});
+
 test("GBMの木トラバーサルがランダム入力でも Python 実装と一致する（葉カバレッジ確保）", async (t) => {
   const model = JSON.parse(readFileSync(join(here, "..", "src", "model.json"), "utf-8"));
   if ((model.model_type ?? "linear") !== "lightgbm_rank") {

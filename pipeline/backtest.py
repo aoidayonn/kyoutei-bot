@@ -35,7 +35,9 @@ DB = Path(__file__).resolve().parent.parent / "data" / "kyotei.db"
 def predict_race(race, model: "model_io.Model"):
     rows = F.build_features(race, model.priors)
     v = model.utilities(rows)
-    return trifecta_probabilities(v, model.stage_exponents)
+    # 本番（worker/src/predict.ts）と同じ展開にする。
+    # 較正を渡し忘れると「バックテストだけ古いモデル」を測ることになる。
+    return trifecta_probabilities(v, model.stage_exponents, model.stage_calib, rows)
 
 
 def run(model_path, start, end, n_points, db=DB):

@@ -63,6 +63,33 @@ def model_logp_trifecta(V, order, exps):
     return lp
 
 
+def _stage_logp(V, X, order, calib):
+    """較正込みで、実現した1-2-3着の対数確率をレースごとに返す（符号は正の負対数）。"""
+    N = V.shape[0]
+    idx = np.arange(N)
+    out = np.zeros(N)
+    mask = np.ones((N, 6), dtype=bool)
+    for stage in range(3):
+        if stage == 0:
+            sc = V.copy()
+        else:
+            blk = calib["second" if stage == 1 else "third"]
+            sc = float(blk["exponent"]) * V
+            sc = sc + np.asarray(blk["pair"], dtype=float)[order[:, 0]]
+            if stage == 2 and blk.get("pair2") is not None:
+                sc = sc + np.asarray(blk["pair2"], dtype=float)[order[:, 1]]
+            if blk.get("weights") is not None:
+                w = np.asarray(blk["weights"], dtype=float)
+                sc = sc + (X.reshape(N * 6, -1) @ w).reshape(N, 6)
+        s = np.where(mask, sc, -1e30)
+        mx = s.max(axis=1, keepdims=True)
+        e = np.where(mask, np.exp(s - mx), 0.0)
+        out += -(sc[idx, order[:, stage]] - (mx[:, 0] + np.log(e.sum(axis=1))))
+        mask = mask.copy()
+        mask[idx, order[:, stage]] = False
+    return out
+
+
 def summarize(name, deltas):
     d = np.asarray(deltas)
     if len(d) == 0:
@@ -97,6 +124,7 @@ def main():
 
     X, order, _ = T.build_matrices(races, m.priors)
     S = np.array([m.raw_utilities(rows) for rows in X])
+    Xa = np.asarray(X, dtype=float)
 
     # 評価窓で温度と段階指数を再推定する（evaluate_model.py と同じ対称手順）。
     # モデルに最大限有利な条件で測る。
@@ -104,7 +132,13 @@ def main():
     exps = T.fit_stage_exponents_from_V(t * S, order, verbose=False)
     V = t * S
 
-    lp_model = model_logp_trifecta(V, order, exps)
+    if m.stage_calib:
+        # 較正入りのモデルなら、本番と同じ展開で測らないと過小評価になる。
+        # 注意: 較正をこの窓で推定していた場合、この数字はインサンプル寄り。
+        lp_model = -_stage_logp(V, Xa, order, m.stage_calib)
+        print("  ※ 枠ペア較正ありのモデルとして測っています")
+    else:
+        lp_model = model_logp_trifecta(V, order, exps)
     payout = np.array([r["payout"] for r in races], dtype=float)
     lp_market = np.log(PAYOUT_RATE / (payout / 100.0))
 
