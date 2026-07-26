@@ -39,6 +39,7 @@ import numpy as np
 import train as T
 import model_io
 import evaluate_model as E
+import stage_calib as SC
 
 DB = Path(__file__).resolve().parent.parent / "data" / "kyotei.db"
 
@@ -71,7 +72,8 @@ def _stage_logp(V, X, order, calib):
     mask = np.ones((N, 6), dtype=bool)
     for stage in range(3):
         if stage == 0:
-            sc = V.copy()
+            # firstブロック（1着の残差較正）も本番同様に適用する
+            sc = SC.first_scores(V, X, calib)
         else:
             blk = calib["second" if stage == 1 else "third"]
             sc = float(blk["exponent"]) * V
@@ -134,9 +136,11 @@ def main():
 
     if m.stage_calib:
         # 較正入りのモデルなら、本番と同じ展開で測らないと過小評価になる。
-        # 注意: 較正をこの窓で推定していた場合、この数字はインサンプル寄り。
+        # 温度も評価窓での再推定ではなく焼き込み値を使う（較正は
+        # その温度スケールで推定されており、混ぜるとスケールが崩れる）
+        V = getattr(m, "temperature", 1.0) * S
         lp_model = -_stage_logp(V, Xa, order, m.stage_calib)
-        print("  ※ 枠ペア較正ありのモデルとして測っています")
+        print("  ※ 較正ありモデル: 焼き込み温度・較正のまま（出荷状態）で測定")
     else:
         lp_model = model_logp_trifecta(V, order, exps)
     payout = np.array([r["payout"] for r in races], dtype=float)

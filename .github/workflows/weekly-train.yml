@@ -127,7 +127,7 @@ jobs:
       # 測ったもの。週次で再学習すると検証期間が毎回ずれるため、
       # そのまま比べるとモデルの差ではなく期間の差を見てしまう。
       # 同じ土俵に乗せるため、現行モデルを新しい検証期間で測り直す。
-      - name: 現行モデルを新しい検証期間で測り直す
+      - name: 現行の審査用モデルを検証窓で採点する
         working-directory: pipeline
         run: |
           python evaluate_model.py --model /tmp/model-current.json \
@@ -145,9 +145,8 @@ jobs:
         working-directory: pipeline
         run: python backtest.py --model model_eval.json --start ${{ steps.split.outputs.test_start }} | tee ../backtest.log
 
-      # 新モデルも旧モデルと同じ手順（温度・段階指数を同一窓で再推定）で測る。
-      # model.json 内の自己申告メトリクスを使うと、キャリブレーションの
-      # 有無や当たり外れが比較に混ざる（実測で「改善0.036のうち0.025が温度」だった）
+      # 新モデルも旧モデルと同じ窓で「出荷状態のまま」採点する。
+      # 自己申告メトリクスを使うと検証期間の違いが比較に混ざるため
       - name: 新モデルを同じ検証期間で測る
         working-directory: pipeline
         run: |

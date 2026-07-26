@@ -131,7 +131,9 @@ def picks_for(prob: dict, odds: dict, q: dict) -> list[str]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default=str(ROOT / "worker" / "src" / "model.json"))
+    # 既定は審査用の双子。配備用モデルは「昨日まで」学習しているため、
+    # 貯めたオッズのレースが全部インサンプルになり β が水増しされる
+    ap.add_argument("--model", default=str(ROOT / "pipeline" / "model_eval.json"))
     ap.add_argument("--db", default=str(DB))
     ap.add_argument("--odds-db", default=str(ODDS_DB))
     ap.add_argument("--min-races", type=int, default=500)
@@ -147,12 +149,32 @@ def main():
     odds_all = load_latest_odds(a.odds_db)
     print(f"オッズのあるレース: {len(odds_all):,}")
 
-    m = model_io.load_model(Path(a.model))
+    model_path = Path(a.model)
+    if not model_path.exists():
+        model_path = ROOT / "worker" / "src" / "model.json"
+        print(f"⚠️ {a.model} が無いため {model_path} を使います")
+    m = model_io.load_model(model_path)
     con = sqlite3.connect(a.db)
     races = [r for r in load_races(con, None, None) if r["race_id"] in odds_all]
     con.close()
     races.sort(key=lambda r: (r["date"], r["jcd"], r["rno"]))
     print(f"結果と突き合わせできたレース: {len(races):,}")
+
+    # モデルの学習期間内のレースはインサンプルなので必ず除外する。
+    # ここを怠ると「モデルが市場に足せる情報」が実際より大きく見え、
+    # λ・β・回収率の全部が楽観側に壊れる
+    tp = (m.data.get("train_period") or [None, None])[1]
+    if tp:
+        before = len(races)
+        races = [r for r in races if r["date"] > tp]
+        dropped = before - len(races)
+        if dropped:
+            print(f"学習期間（〜{tp}）と重なる {dropped:,} 件を除外 → {len(races):,} 件")
+        if not races:
+            raise SystemExit(
+                "全レースがモデルの学習期間内です。審査用の双子（pipeline/model_eval.json）を\n"
+                "使ってください（--model 省略時の既定）。"
+            )
 
     rows = []
     for r in races:
