@@ -151,9 +151,17 @@ cd worker && npm run deploy
 
 1. **λ（市場ブレンド率）の実測**（最優先、というより実質これしか残っていない）
 
+   **Actions → 「λ実測」 → Run workflow** を押すだけです（結果はLINEに届く）。
+   毎週水曜12:00にも自動実行され、データが足りないうちは「まだ早い」と届きます。
+
+   手元で回す場合は2つ準備が要ります（Actions側なら不要）:
    ```bash
-   # Actions →「オッズ収集」→ 成果物 odds-db を data/odds.db に展開してから
-   cd pipeline && python fit_lambda.py
+   # (1) ローカルの kyotei.db に直近の結果を取り込む
+   cd pipeline
+   python download.py --start 2026-07-20 --end <昨日> --workers 4
+   python build_db.py --start 2026-07-20 --end <昨日>
+   # (2) Actions →「オッズ収集」→ 成果物 odds-db を data/odds.db に展開してから
+   python fit_lambda.py
    ```
 
    Benter式の α・β の実測値と、**本番の買い方の回収率（信頼区間つき）**が出ます。

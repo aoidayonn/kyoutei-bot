@@ -1,0 +1,110 @@
+name: λ実測（Benter係数と本番戦略の回収率）
+
+# 貯めたオッズで fit_lambda.py を回し、結果をLINEに送る。
+#
+# ローカルで回すには「odds-db成果物の手動ダウンロード」と
+# 「ローカル kyotei.db への最新結果の取り込み」が必要で罠が多い。
+# Actions側にはDBキャッシュとオッズ成果物の両方が揃っているので、
+# ここで回すのが一番確実。
+#
+# 有効レースが500未満のうちは「まだ早い」と通知して正常終了する。
+
+on:
+  schedule:
+    # 毎週水曜 JST 12:00（UTC 3:00）。データが足りるまでは「まだ早い」が届くだけ
+    - cron: "0 3 * * 3"
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  actions: read   # 別ワークフローの成果物（odds-db）を取得するため
+
+concurrency:
+  group: fit-lambda
+  cancel-in-progress: false
+
+jobs:
+  fit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r pipeline/requirements.txt
+
+      - name: レース結果DBを復元（日次更新のキャッシュ）
+        uses: actions/cache/restore@v4
+        with:
+          path: data/kyotei.db
+          key: kyotei-db-
+          restore-keys: kyotei-db-
+
+      - name: 最新のオッズ成果物（odds-db）を取得
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          URL=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/artifacts?name=odds-db&per_page=1" \
+            | python3 -c "import json,sys; a=json.load(sys.stdin)['artifacts']; print(a[0]['archive_download_url'] if a else '')")
+          if [ -z "$URL" ]; then
+            echo "::error::odds-db 成果物が見つかりません（オッズ収集が一度も成功していない？）"
+            exit 1
+          fi
+          curl -sL -H "Authorization: Bearer $GH_TOKEN" "$URL" -o /tmp/odds.zip
+          mkdir -p data
+          python3 -c "import zipfile; zipfile.ZipFile('/tmp/odds.zip').extractall('data')"
+          ls -la data/
+
+      - name: λ実測
+        id: fit
+        working-directory: pipeline
+        run: |
+          set +e
+          python fit_lambda.py > ../fit.log 2>&1
+          RESULT=$?
+          set -e
+          cat ../fit.log
+          echo "result=$RESULT" >> $GITHUB_OUTPUT
+          # 「まだ足りない」は失敗ではなく想定内
+          if [ $RESULT -ne 0 ] && ! grep -q "有効なレースが" ../fit.log; then
+            exit $RESULT
+          fi
+
+      - name: 結果をLINEに通知
+        if: always()
+        working-directory: pipeline
+        env:
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
+          FIT_RESULT: ${{ steps.fit.outputs.result }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python - <<'EOF'
+          import os
+          from notify_line import notify
+
+          def read():
+              try:
+                  return open("../fit.log", encoding="utf-8").read().strip()
+              except OSError:
+                  return "ログなし"
+
+          log = read()
+          if os.environ.get("JOB_STATUS") == "failure":
+              body = "⚠️ λ実測が失敗しました\n\n" + log[-800:]
+          elif os.environ.get("FIT_RESULT") != "0":
+              # min-races 未達
+              body = "― λ実測はまだ早い\n\n" + log[-400:]
+          else:
+              body = "📈 λ実測の結果\n\n" + log[-1500:]
+          notify(body)
+          EOF
