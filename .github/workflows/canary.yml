@@ -78,6 +78,7 @@ jobs:
               sys.exit(0)
 
           problems = []
+          odds_missing = []   # オッズ欠落は場ごとの事情（中止・発売前）がありうる
           checked = 0
 
           for jcd in jcds[:3]:
@@ -119,9 +120,12 @@ jobs:
                       f"jcd={jcd}: 1号艇の1着確率が {probs[0]:.1%} で不自然です"
                   )
 
-              # オッズが取れているか（取れないと期待値判定ができない）
+              # オッズが取れているか。ただし1場だけの欠落はレース中止・
+              # 発売前などの個別事情がありうる（実例: 2026-07-29 津1Rが中止で
+              # 発売停止→誤検知）。ページ構造の変化なら全場で同時に落ちるので、
+              # 2場以上で欠落したときだけ異常として扱う
               if not data.get("hasOdds"):
-                  problems.append(f"jcd={jcd}: オッズを取得できていません")
+                  odds_missing.append(f"jcd={jcd}")
 
               # 本番のモデルがリポジトリと一致しているか（デプロイ漏れの検知）。
               # 改善をコミット・Pushしても、デプロイされなければ本番は古いまま
@@ -132,6 +136,11 @@ jobs:
                           f"本番のモデルが古いです（本番 {data['modelVersion']} / "
                           f"リポジトリ {expected_version}）。デプロイ漏れの可能性"
                       )
+
+          if len(odds_missing) >= 2:
+              problems.append("オッズを取得できていません: " + ", ".join(odds_missing))
+          elif odds_missing:
+              print(f"注意: {odds_missing[0]} のみオッズ欠落（中止・発売前の可能性が高いので通知しない）")
 
           if checked == 0:
               problems.append("1件も検証できませんでした")
