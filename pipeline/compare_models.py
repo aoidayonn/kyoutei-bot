@@ -4,7 +4,10 @@
 主観を挟まないよう、検証データ（学習に使っていない期間）の指標だけで決める。
 
     python compare_models.py old.json new.json
-    → 良くなっていれば終了コード0、そうでなければ1
+    終了コード:
+      0 = 改善（採用）
+      1 = 同等（誤差の範囲。レシピは同じなのでデータ更新だけ配備してよい）
+      2 = 劣化（配備してはいけない）
 
 判定基準
 --------
@@ -30,6 +33,8 @@ MIN_NLL3_GAIN = 0.002
 MIN_LOGLOSS_GAIN = 0.001
 # 1着的中率がこれ以上落ちたら、NLLが良くても採用しない
 MAX_ACCURACY_DROP = 0.005
+# 3連単NLLがこれ以上悪化していたら「劣化」とみなす（データ更新配備も止める）
+MAX_NLL3_REGRESSION = 0.005
 
 
 def load_metrics(path: Path):
@@ -79,15 +84,20 @@ def main():
     print(f"  基準線     1号艇固定 {new['baseline_lane1']:.2%}")
 
     if new["win_accuracy"] <= new["baseline_lane1"]:
-        print("\n✖ 1号艇を買い続けるより悪いモデルです。採用しません。")
-        sys.exit(1)
+        print("\n✖ 1号艇を買い続けるより悪いモデルです。配備しません。")
+        sys.exit(2)
 
     if d_acc < -MAX_ACCURACY_DROP:
-        print(f"\n✖ 1着的中率が {abs(d_acc):.2%} 落ちています。採用しません。")
-        sys.exit(1)
+        print(f"\n✖ 1着的中率が {abs(d_acc):.2%} 落ちています。配備しません。")
+        sys.exit(2)
+
+    if d_main < -MAX_NLL3_REGRESSION:
+        print(f"\n✖ {label} が {abs(d_main):.4f} 悪化しています。配備しません。")
+        sys.exit(2)
 
     if d_main < min_gain:
-        print(f"\n― {label} の改善が誤差の範囲です。現行モデルのままにします。")
+        print(f"\n― {label} は同等（誤差の範囲）です。レシピは変わらないので、"
+              "データを最新化した配備だけ行います。")
         sys.exit(1)
 
     print("\n✔ 改善しているので新しいモデルを採用します。")

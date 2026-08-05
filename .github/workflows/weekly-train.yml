@@ -167,16 +167,26 @@ jobs:
           set -e
           cat ../compare.log
 
+          # 0=改善 / 1=同等（データ更新のみ配備） / 2=劣化（配備しない）
           if [ $RESULT -eq 0 ]; then
-            echo "判定: 採用"
+            echo "判定: 採用（改善）"
             echo "adopt=true" >> $GITHUB_OUTPUT
+            echo "reason=improved" >> $GITHUB_OUTPUT
+          elif [ $RESULT -eq 1 ]; then
+            # レシピ同等なら配備は毎週データを最新化する。ここで止めると
+            # 「+1週間のデータでは0.002も動かない」ため配備が永遠に古くなる
+            echo "判定: 同等 → データ更新のみ配備"
+            echo "adopt=true" >> $GITHUB_OUTPUT
+            echo "reason=refresh" >> $GITHUB_OUTPUT
           elif [ "${{ github.event.inputs.force }}" = "true" ]; then
-            echo "判定: 改善なしだが強制採用が指定されている"
+            echo "判定: 劣化だが強制採用が指定されている"
             echo "adopt=true" >> $GITHUB_OUTPUT
             echo "forced=true" >> $GITHUB_OUTPUT
+            echo "reason=forced" >> $GITHUB_OUTPUT
           else
-            echo "判定: 見送り（現行モデルのまま）"
+            echo "判定: 見送り（新モデルが劣化しているため現行のまま）"
             echo "adopt=false" >> $GITHUB_OUTPUT
+            echo "reason=regression" >> $GITHUB_OUTPUT
           fi
 
       # レシピが審査を通ったので、同じレシピで昨日まで学習した配備用を作る
@@ -237,6 +247,7 @@ jobs:
           LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
           ADOPTED: ${{ steps.compare.outputs.adopt }}
+          REASON: ${{ steps.compare.outputs.reason }}
           FORCED: ${{ steps.compare.outputs.forced }}
           JOB_STATUS: ${{ job.status }}
           HAS_CF_TOKEN: ${{ env.CF_TOKEN != '' }}
@@ -258,20 +269,23 @@ jobs:
           if status == "failure":
               body = "⚠️ 週次モデル再学習が失敗しました\n\n" + (read("train.log")[-500:] or "ログなし")
           elif adopted == "true":
+              reason = os.environ.get("REASON", "")
               # CLOUDFLARE_API_TOKEN 未設定だとコミットまでで止まる。
               # その状態で「デプロイしました」と言うのは嘘になる
-              head = ("✅ 新しいモデルをデプロイしました" if deployed
-                      else "✅ 新しいモデルをコミットしました（CLOUDFLARE_API_TOKEN 未設定のためデプロイはスキップ。手動で npm run deploy してください）")
+              if not deployed:
+                  head = "✅ 新しいモデルをコミットしました（CLOUDFLARE_API_TOKEN 未設定のためデプロイはスキップ。手動で npm run deploy してください）"
+              elif reason == "refresh":
+                  head = "🔄 レシピ同等のため、学習データだけ昨日までに更新して配備しました"
+              else:
+                  head = "✅ 新しいモデルをデプロイしました"
               if os.environ.get("FORCED") == "true":
-                  # 下に貼る compare.log には「見送り」と書かれているので、
-                  # force で採用した事実を明示しないと通知が自己矛盾して見える
                   head += "\n（force指定による強制採用。以下の比較結果は参考）"
               body = head + "\n\n" + read("compare.log")
               bt = read("backtest.log")
               if bt:
                   body += "\n\n" + bt[-800:]
           else:
-              body = "― モデルを更新しませんでした（改善なし）\n\n" + read("compare.log")
+              body = "― モデルを更新しませんでした（新モデルが劣化）\n\n" + read("compare.log")
 
           notify(body)
           EOF
