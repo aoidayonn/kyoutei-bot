@@ -250,21 +250,35 @@ def main():
     print(f"  モデルのみ (α=0, β=1)      {nll(te, 0.0, 1.0):.4f}")
     print(f"  λブレンド (α={1-lam:.2f}, β={lam:.2f}) {n_lam:.4f}")
     print(f"  Benter式  (α={alpha:.2f}, β={beta:.2f}) {n_ab:.4f}")
-    gain = n_mkt - min(n_lam, n_ab)
-    print(f"\n  市場に対する改善 {gain:+.4f}")
-    if beta <= 0.005 and abs(alpha - 1.0) < 0.05:
-        print("  → モデルは市場に何も足せておらず、市場の歪みも実用量ではありません。")
-    elif beta <= 0.005:
-        print("  → モデルの寄与はゼロですが、α<1 なら市場自身の歪み"
-              "（favorite-longshot bias）だけで僅かに市場を上回れます。")
+
+    # 改善が本物かどうかは、点推定ではなくレースごとの差のばらつきで判定する。
+    # （初回実測で +0.0027 を「情報を持っている」と断言してしまった反省。
+    #   740レースのSEは±0.005前後あり、しかもλ拘束版とBenter版で符号が
+    #   割れていた＝典型的な雑音圏内だった）
+    use_ab = n_ab <= n_lam
+    ua, ub = (alpha, beta) if use_ab else (1 - lam, lam)
+    deltas = []
+    for _, q, p, win, _ in te:
+        pr = pool(q, p, ua, ub)
+        d = (-math.log(max(q.get(win, 1e-12), 1e-12))
+             + math.log(max(pr.get(win, 1e-12), 1e-12)))
+        deltas.append(d)  # 正 = ブレンドが市場より的中組に高い確率
+    darr = np.array(deltas)
+    gain = float(darr.mean())
+    se = float(darr.std(ddof=1) / math.sqrt(len(darr)))
+    print(f"\n  市場に対する改善 {gain:+.4f} ± {2*se:.4f} (95%)")
+    if gain > 2 * se:
+        print("  → モデルは市場が見ていない情報を持っています（統計的に有意）。")
+    elif gain > 0:
+        print("  → 方向はプラスですが、まだ雑音と区別できません。データを貯めて再判定を。")
     else:
-        print("  → モデルは市場が見ていない情報を持っています。")
-    if n_ab < n_lam - 1e-4:
-        print(f"  → α+β=1 の拘束を外す価値があります（worker/src/selection.ts の"
-              f" ブレンドを α={alpha:.2f}, β={beta:.2f} に）")
+        print("  → 現時点でモデルは市場に足せていません。")
+    if n_ab < n_lam - 2 * se:
+        print(f"  → α+β=1 の拘束を外す価値がありそうです"
+              f"（α={alpha:.2f}, β={beta:.2f}。ただし推定が安定してから）")
 
     # 本番の買い方は最良の組で評価
-    use_a, use_b = (alpha, beta) if n_ab <= n_lam else (1 - lam, lam)
+    use_a, use_b = ua, ub
 
     # ---- 本番の買い方をそのまま再現して回収率を出す ----
     inv = ret = 0
@@ -306,7 +320,12 @@ def main():
         boot.append(s.sum())
     lo, hi = np.percentile(boot, [2.5, 97.5])
     print(f"  収支 {arr.sum():+,.0f}円   95%信頼区間 [{lo:+,.0f}, {hi:+,.0f}]")
-    if lo > 0:
+    # ベット数が少なすぎるとブートストラップは見かけ上「有意」になりうる
+    # （全ベットが外れなら再抽出も全部マイナスになるだけ）。件数で先に判定する
+    if bets < 100:
+        print(f"  → ベット数が {bets} 点しかなく、戦略の優劣は判断できません。")
+        print("     買える機会自体が稀（レースの1%前後）なので、これが常態です。")
+    elif lo > 0:
         print("  → 統計的に有意な黒字です。")
     elif hi < 0:
         print("  → 統計的に有意な赤字です。この買い方では負けます。")
